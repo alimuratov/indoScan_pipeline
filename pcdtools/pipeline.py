@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import os
 import numpy as np
-from typing import Optional, Dict
+from typing import Optional, Dict, Final
 
 from .io import read_point_cloud, classify_points_by_color
 from .plane import segment_plane_road, compute_depths_from_plane, filter_pothole_depths
 from .cluster import dbscan_labels
 from .analysis import per_pothole_summary, fit_quadratic_surface, surface_depth_grid
 from .visualize import save_hull_plot, save_depth_heatmap, visualize_plane_and_potholes
+
+
+# Constants
+EPS_MAX: Final[float] = 1e6
 
 
 def run_geometry_pipeline(
@@ -86,6 +90,10 @@ def run_geometry_pipeline(
         return
 
     labels, n_clusters = dbscan_labels(filtered_points, eps=eps)
+
+    # If no clusters found, use max eps
+    if n_clusters == 0:
+        labels, n_clusters = dbscan_labels(filtered_points, eps=EPS_MAX)
 
     print("\nPothole Analysis Results")
     print(f"Plane model (a,b,c,d): {plane_model}")

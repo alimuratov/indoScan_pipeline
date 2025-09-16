@@ -27,6 +27,12 @@ import subprocess
 import sys
 from typing import List
 
+# Ensure the scripts root is importable (so we can import sensors/media packages)
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_SCRIPTS_ROOT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
+if _SCRIPTS_ROOT not in sys.path:
+    sys.path.insert(0, _SCRIPTS_ROOT)
+
 
 def list_immediate_subdirs(parent_dir: str) -> List[str]:
     try:
@@ -105,7 +111,7 @@ def run_subprocess(cmd: List[str], cwd: str | None = None) -> int:
 
 
 def run_process_gps(segment_dir: str) -> None:
-    script_path = os.path.join(os.path.dirname(__file__), "process_gps.py")
+    script_path = os.path.abspath(os.path.join(_SCRIPTS_ROOT, "sensors", "process_gps.py"))
     gps_txt = os.path.join(segment_dir, "gps.txt")
     output_json = os.path.join(segment_dir, "imu.json")
 
@@ -122,9 +128,9 @@ def run_process_gps(segment_dir: str) -> None:
 
 
 def run_retrieve_depth(segment_dir: str, images_folder_name: str) -> None:
-    script_path = os.path.join(os.path.dirname(__file__), "retrieve_depth_timestamps.py")
+    script_path = os.path.abspath(os.path.join(_SCRIPTS_ROOT, "sensors", "segment_depth_timestamps.py"))
     image_folder = os.path.join(segment_dir, images_folder_name)
-    output_json = os.path.join(segment_dir, "aggregated_depth_data.json")
+    output_json = os.path.join(segment_dir, "segment_depth_timestamps.json")
 
     if not os.path.isfile(script_path):
         logging.error("retrieve_depth_timestamps.py not found: %s", script_path)
@@ -136,8 +142,8 @@ def run_retrieve_depth(segment_dir: str, images_folder_name: str) -> None:
     rc = run_subprocess([
         sys.executable,
         script_path,
-        "--image-folder", image_folder,
         "--root-dir", segment_dir,
+        "--images-folder-name", images_folder_name,
         "--output", output_json,
     ])
     if rc == 0:
@@ -147,10 +153,7 @@ def run_retrieve_depth(segment_dir: str, images_folder_name: str) -> None:
 def run_create_video(segment_dir: str, images_folder_name: str, fps: int) -> None:
     # Import and call function directly to control input/output
     try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        if script_dir not in sys.path:
-            sys.path.insert(0, script_dir)
-        from create_video import create_video_from_images  # type: ignore
+        from media.create_video import create_video_from_images  # type: ignore
     except Exception:
         logging.exception("Failed to import create_video module")
         return
@@ -167,19 +170,53 @@ def run_create_video(segment_dir: str, images_folder_name: str, fps: int) -> Non
     except Exception:
         logging.exception("create_video failed for segment: %s", segment_dir)
 
+def run_calculate_route_length(segment_dir: str, odometry_filename: str) -> None:
+    odo_path = os.path.join(segment_dir, odometry_filename)
+    from sensors.calculate_road_length import calculate_route_length 
+    try: 
+        length_m = calculate_route_length(odo_path)
+        length_km = length_m / 1000.0
+    except Exception:
+        logging.exception("Failed to calculate route length for segment: %s", segment_dir)
+        return
 
-def parse_args() -> argparse.Namespace:
+    logging.info("Route length for segment %s: %.2f m (%.5f km)", segment_dir, length_m, length_km)
+    out_json = os.path.join(segment_dir, "route_length.json")
+    try:
+        with open(out_json, "w") as f:
+            f.write("{\n  \"meters\": %.6f,\n  \"kilometers\": %.6f\n}\n" % (length_m, length_km))
+        logging.info("Wrote %s", out_json)
+    except Exception:
+        logging.exception("Failed to write route_length.json for segment: %s", segment_dir)
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Traverse segments and run GPS/depth/video tasks")
     parser.add_argument("--root", required=True, help="Root directory of roads or a single segment directory")
     parser.add_argument("--images-folder-name", default="raw_images", help="Name of images folder inside each segment")
     parser.add_argument("--fps", type=int, default=10, help="FPS for created videos")
     parser.add_argument("--odometry-filename", default="imu.txt", help="Filename of odometry file in each segment (timestamp x y z ...)")
     parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
-    return parser.parse_args()
+    return parser
 
 
 def main() -> None:
-    args = parse_args()
+    p = build_parser()
+    cfg_path = p.parse_known_args()[0].config
+
+    from common.config import load_config
+    cfg = load_config(cfg_path)
+
+    p.set_defaults(
+        root=cfg.paths.source_roads_root,
+        images_folder_name=cfg.paths.images_folder_name,
+        odometry_filename=cfg.paths.odometry_filename,
+        fps=cfg.media.fps,
+        log_level=cfg.logging.level,
+    )
+
+    args = p.parse_args()
+    
     logging.basicConfig(
         level=getattr(logging, str(args.log_level).upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(message)s",
@@ -193,32 +230,13 @@ def main() -> None:
     segments = discover_segments(root, args.images_folder_name)
     for segment in segments:
         logging.info("\n=== Processing segment: %s ===", segment)
+        
+        run_estimate_depth_for_potholes(segment)
         run_process_gps(segment)
         run_retrieve_depth(segment, args.images_folder_name)
-        # run_create_video(segment, args.images_folder_name, args.fps)
-        # Route length calculation (optional per segment)
-        try:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            if script_dir not in sys.path:
-                sys.path.insert(0, script_dir)
-            from calculate_road_length import calculate_route_length  # type: ignore
-            odo_path = os.path.join(segment, args.odometry_filename)
-            if os.path.isfile(odo_path):
-                length_m = calculate_route_length(odo_path)
-                length_km = length_m / 1000.0
-                logging.info("Route length for segment %s: %.2f m (%.5f km)", segment, length_m, length_km)
-                # write route_length.json
-                out_json = os.path.join(segment, "route_length.json")
-                try:
-                    with open(out_json, "w") as f:
-                        f.write("{\n  \"meters\": %.6f,\n  \"kilometers\": %.6f\n}\n" % (length_m, length_km))
-                    logging.info("Wrote %s", out_json)
-                except Exception:
-                    logging.exception("Failed to write route_length.json for segment: %s", segment)
-            else:
-                logging.info("Odometry file not found, skipping length calc: %s", odo_path)
-        except Exception:
-            logging.exception("Route length calculation failed for segment: %s", segment)
+        run_create_video(segment, args.images_folder_name, args.fps)
+        run_calculate_route_length(segment, args.odometry_filename)
+        
 
     logging.info("All segments processed: %d", len(segments))
 

@@ -11,10 +11,11 @@ import argparse
 from pcdtools.pipeline import run_geometry_pipeline
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Estimate pothole depths/areas/volumes from a colored point cloud"
     )
+    parser.add_argument("--config", help="Path to config file.")
     parser.add_argument("pcd_path", help="Path to input point cloud (PCD/PLY/etc.)")
     parser.add_argument(
         "--eps",
@@ -59,12 +60,30 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Base path for depth heatmap PNG (cluster suffix appended)",
     )
-    return parser.parse_args()
+    return parser
 
 
 def main() -> None:
-    args = parse_args()
-    # If summary-only (and not aggregating), encourage a single cluster by bumping eps
+    p = build_parser()
+
+    cfg_path = p.parse_known_args()[0].config
+
+    from common.config import load_config
+    cfg = load_config(cfg_path)
+
+    p.set_defaults(
+        eps=cfg.processing.eps,
+        summary_only=cfg.processing.summary_only,
+        save_hull_2d=cfg.processing.save_hull_2d,
+        hull_plot_path=cfg.processing.hull_plot_path,
+        aggregate_all=cfg.processing.aggregate_all,
+        visualize_3d=cfg.processing.visualize_3d,
+        save_surface_heatmap=cfg.processing.save_surface_heatmap,
+        surface_heatmap_path=cfg.processing.surface_heatmap_path,
+    )
+
+    args = p.parse_args()
+
     eps_val = args.eps
     if args.summary_only and not args.aggregate_all and eps_val < 1e6:
         eps_val = 1e6

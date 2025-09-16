@@ -4,7 +4,8 @@ Aggregate pothole depth measurements and their relative video timestamps into a
 single JSON file.
 
 This script scans a segment directory (``--root-dir``) that contains multiple
-pothole folders. Each pothole subfolder is expected to contain:
+pothole folders and a reference images folder (default: ``raw_images``). Each
+pot-hole subfolder is expected to contain:
 - At least one image file named as a floating-point timestamp, e.g.
   ``2430.799631730.jpg`` (or ``.png``). The numeric portion encodes the
   capture time in seconds.
@@ -12,23 +13,23 @@ pothole folders. Each pothole subfolder is expected to contain:
   ``Surface-based max depth: 0.0259 m`` from which the pothole's depth (in
   meters) is parsed.
 
-Given a separate image folder that also contains timestamped reference images,
-the earliest timestamp from that folder is treated as the video's start time.
-For every pothole subfolder discovered under the segment directory, the script
-computes the pothole's relative timestamp (seconds since the first image) and
-emits a compact JSON list with objects of the form:
+The earliest timestamp in the segment's reference images folder is treated as
+the video's start time. For every pothole subfolder discovered under the
+segment directory, the script computes the pothole's relative timestamp
+(seconds since the first image) and emits a compact JSON list with objects of
+the form:
 
 {"pothole_depth": <float>, "video_timestamp": "<seconds_as_string>"}
 
 Typical usage:
-    python scripts/retrieve_depth_timestamps.py \
-        --image-folder /path/to/reference_images \
+    python scripts/sensors/segment_depth_timestamps.py \
         --root-dir /path/to/road/<road_id>/<segment_id> \
-        --output aggregated_depth_data.json
+        --images-folder-name raw_images \
+        --output segment_depth_timestamps.json
 
 Directory structure (example):
 
-    /path/to/reference_images
+    /path/to/road/<road_id>/<segment_id>/raw_images
     ├── 2430.799631730.jpg
     ├── 2431.012345678.jpg
     └── ...
@@ -72,11 +73,12 @@ def process_pothole_folder(pothole_folder):
         - If a timestamp is found but depth cannot be parsed, the tuple
           ``(timestamp_str, None)`` is returned.
     """
-    timestamp = None 
-    # find an image with .jpg extension, parse its name (2430.799631730.jpg) to get the timestamp
+    timestamp = None
+    # find an image with .jpg/.png extension, parse its stem (e.g., 2430.799631730)
     for filename in os.listdir(pothole_folder):
-        if filename.endswith(".jpg") or filename.endswith(".png"):
-            timestamp = filename[:-4]  # Remove .jpg extension
+        name, ext = os.path.splitext(filename)
+        if ext.lower() in (".jpg", ".png"):
+            timestamp = name
             break  # Only need the first image
     
     if not timestamp:
@@ -100,19 +102,19 @@ def process_pothole_folder(pothole_folder):
     print(f"No depth found for timestamp {timestamp} in {pothole_folder}")
     return timestamp, None
 
-def process_segment_folder(segment_folder, first_timestamp):
+def process_segment_folder(segment_folder, images_folder_name="raw_images"):
     """Collect depth/timestamp entries for all potholes within a segment folder.
 
-    For each subdirectory of ``segment_folder``, this function attempts to
-    extract the pothole's image timestamp and depth via
-    ``process_pothole_folder`` and compute the relative timestamp using
-    ``first_timestamp``.
+    Determines the earliest reference timestamp by scanning
+    ``segment_folder/images_folder_name``. Then, for each subdirectory of
+    ``segment_folder``, attempts to extract the pothole's image timestamp and
+    depth via ``process_pothole_folder`` and compute the relative timestamp
+    using that earliest reference.
 
     Args:
         segment_folder (str): Path to a segment folder that contains pothole subfolders.
-        first_timestamp (str): The earliest absolute timestamp (seconds as
-            string) from the reference image folder, used as the zero point for
-            relative timing.
+        images_folder_name (str): Name of the reference images folder under the
+            segment folder (default: "raw_images").
 
     Returns:
         list[dict]: A list of entries, where each entry has:
@@ -123,6 +125,24 @@ def process_segment_folder(segment_folder, first_timestamp):
     Skips entries missing timestamps or depths, and continues if timestamps are
     not parseable as floats.
     """
+    # Determine earliest reference timestamp from the images folder
+    images_dir = os.path.join(segment_folder, images_folder_name)
+    if not os.path.isdir(images_dir):
+        print(f"Image folder not found: {images_dir}")
+        return []
+
+    timestamps = []
+    for filename in os.listdir(images_dir):
+        name, ext = os.path.splitext(filename)
+        if ext.lower() == ".jpg":
+            timestamps.append(name)
+    if not timestamps:
+        print("No images found in the image folder")
+        return []
+
+    timestamps.sort()
+    first_timestamp = timestamps[0]
+
     # Collect entries for this segment folder
     data_list = []
     # Go over each pothole folder in the segment folder
@@ -146,11 +166,30 @@ def process_segment_folder(segment_folder, first_timestamp):
             data_list.append(json_data)
     return data_list
 
-def main(args):
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Aggregate pothole depths and relative video timestamps into JSON for a single segment.")
+    parser.add_argument(
+        "-r", "--root-dir",
+        default=".",
+        help="Segment directory containing pothole subfolders."
+    )
+    parser.add_argument(
+        "--images-folder-name",
+        default="raw_images",
+        help="Name of the reference images folder under the segment directory (default: raw_images)."
+    )
+    parser.add_argument(
+        "-o", "--output",
+        default="segment_depth_timestamps.json",
+        help="Output JSON file path for aggregated results."
+    )
+    return parser
+
+def main():
     """Entry point for aggregating pothole depths and relative timestamps for a segment.
 
     This function determines the earliest reference timestamp from the
-    ``--image-folder`` directory, traverses all set folders under
+    ``--image-folder-name`` directory, traverses all set folders under
     ``--root-dir``, aggregates valid pothole entries, sorts them by relative
     time, and writes the result as JSON to ``--output``.
 
@@ -166,29 +205,14 @@ def main(args):
     Side Effects:
         Writes a JSON file to the path specified by ``--output``.
     """
-    # Sort images by their names (timestamps) in the given folder and retrieve the first timestamp
-    image_folder = args.image_folder
-    root_dir = args.root_dir
-    output_path = args.output
-    timestamps = []
-    
-    if not os.path.exists(image_folder):
-        print(f"Image folder not found: {image_folder}")
-        return
-    
-    for filename in os.listdir(image_folder):
-        if filename.endswith(".jpg"):
-            timestamps.append(filename[:-4])  # Remove .jpg extension
-    
-    if not timestamps:
-        print("No images found in the image folder")
-        return
-        
-    timestamps.sort()
-    first_timestamp = timestamps[0]
+    p = build_parser()
+    args = p.parse_args()
 
     # Process the provided root_dir as a single segment folder
-    aggregated_list = process_segment_folder(root_dir, first_timestamp)
+    root_dir = args.root_dir
+    output_path = args.output
+    images_folder_name = args.images_folder_name
+    aggregated_list = process_segment_folder(root_dir, images_folder_name)
 
     # sort aggregated_list entries by the timestamp field
     aggregated_list.sort(key=lambda x: float(x["video_timestamp"]))
@@ -200,21 +224,4 @@ def main(args):
     print(f"Data written to {output_path} with {len(aggregated_list)} entries")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Aggregate pothole depths and relative video timestamps into JSON for a single segment.")
-    parser.add_argument(
-        "-i", "--image-folder",
-        default="/home/kodifly/Downloads/segmented_images_001/segmented_images",
-        help="Folder containing reference images named as <timestamp>.jpg to determine the first timestamp."
-    )
-    parser.add_argument(
-        "-r", "--root-dir",
-        default=".",
-        help="Segment directory containing pothole subfolders."
-    )
-    parser.add_argument(
-        "-o", "--output",
-        default="aggregated_depth_data.json",
-        help="Output JSON file path for aggregated results."
-    )
-    args = parser.parse_args()
-    main(args)
+    main()

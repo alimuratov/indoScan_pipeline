@@ -1,4 +1,32 @@
 #!/usr/bin/env python3
+"""run_estimate_depth_for_potholes
+
+Purpose:
+- Orchestrate running the pothole parameter estimation script for every pothole
+  directory under a given root, writing an ``output.txt`` per pothole.
+
+Inputs (CLI):
+- --root: Roads/segment/pothole root to scan (required).
+- --estimate-script: Path to the estimator (e.g., ``scripts/processing/estimate_pothole_params.py``) (required).
+- --config: Optional config file passed through to the estimator.
+- --log-level: Logging level.
+- --aggregate-all: Forward-compat flag; may be used by the estimator.
+
+Where/how used:
+- Run manually by operators or called from higher-level orchestration to
+  precompute pothole metrics and persist them as ``output.txt`` files.
+
+Outputs:
+- For each pothole directory detected (contains exactly one ``.pcd`` and at
+  least one image), creates/overwrites ``output.txt`` with the estimator's
+  stdout. Logs summary and any anomalies.
+
+General workflow:
+1) Discover pothole folders under ``--root`` (heuristic: has one ``.pcd`` and an image).
+2) For each folder, select the ``.pcd``, run the estimator in that folder as CWD,
+   optionally passing ``--config``.
+3) Capture stdout and write to ``output.txt`` in the same folder.
+"""
 import argparse
 import logging
 import os
@@ -35,9 +63,14 @@ def find_pothole_dirs(root: Path) -> List[Path]:
     return out
 
 
-def run_estimate_depth(estimate_script: Path, pcd_path: Path, cwd: Path, extra_args: List[str]) -> str:
+def run_estimate_depth(estimate_script: Path, pcd_path: Path, cwd: Path, cfg_path: Path) -> str:
     """Invoke the estimate script with provided extra CLI args and return stdout."""
-    cmd = [sys.executable, str(estimate_script), str(pcd_path)] + list(extra_args)
+    cmd = [sys.executable, str(estimate_script), str(pcd_path)]
+
+    if cfg_path:
+        cmd.append("--config")
+        cmd.append(str(cfg_path))
+        
     logging.debug("Running: %s", " ".join(cmd))
     proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
     if proc.returncode != 0:
@@ -47,24 +80,30 @@ def run_estimate_depth(estimate_script: Path, pcd_path: Path, cwd: Path, extra_a
     return (proc.stdout or "").strip()
 
 
-def parse_args() -> tuple[argparse.Namespace, List[str]]:
-    """Parse known args for this driver; return (args, passthrough) for estimate script.
-
-    Unknown args are preserved and forwarded to the underlying estimate script, so you can
-    add/change flags without editing this file. Common flags are also provided explicitly
-    for convenience and clearer discoverability.
-    """
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run estimate script per pothole folder")
+    parser.add_argument("--config", help="Path to config file.")
     parser.add_argument("--root", required=True, help="Root directory (roads or a single segment/pothole folder)")
     parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
-    parser.add_argument("--estimate-script", default=None, help="Path to estimate script (default: estimate_depth.py, fallback: estimate_pothole_params.py)")
-
-    args, passthrough = parser.parse_known_args()
-    return args, passthrough
+    parser.add_argument("--estimate-script", default=None, help="Path to estimate script: estimate_pothole_params.py)", required=True)
+    return parser
 
 
 def main() -> None:
-    args, passthrough = parse_args()
+    p = build_parser()
+    cfg_path = p.parse_known_args()[0].config
+
+    from common.config import load_config
+    cfg = load_config(cfg_path)
+
+    p.set_defaults(
+        root=cfg.paths.source_roads_root,
+        log_level=cfg.logging.level,
+        estimate_script=cfg.paths.estimate_script,
+    )
+
+    args = p.parse_args()
+
     logging.basicConfig(
         level=getattr(logging, str(args.log_level).upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(message)s",
@@ -75,12 +114,8 @@ def main() -> None:
         logging.error("Root is not a directory: %s", root)
         sys.exit(1)
 
-    script_dir = Path(__file__).resolve().parent
-    estimate_script: Path
-    if args.estimate_script:
-        estimate_script = Path(args.estimate_script).resolve()
-    else:
-        estimate_script = script_dir / "estimate_pothole_params.py"
+
+    estimate_script = Path(args.estimate_script).resolve()
     if not estimate_script.is_file():
         logging.error("Estimate script not found at: %s", estimate_script)
         sys.exit(1)
@@ -92,12 +127,6 @@ def main() -> None:
 
     logging.info("Found %d pothole folder(s)", len(pothole_dirs))
 
-    # Build extra args to forward: pass all unknown args through as-is
-    extra: List[str] = list(passthrough)
-    # Ensure --aggregate-all is on by default if not provided
-    if "--aggregate-all" not in extra:
-        extra += ["--aggregate-all"]
-
     for pothole_dir in sorted(pothole_dirs):
         # Select a .pcd file (first one)
         pcd_files = sorted([p for p in pothole_dir.iterdir() if p.is_file() and p.suffix.lower() == ".pcd"])
@@ -105,13 +134,15 @@ def main() -> None:
             logging.warning("No .pcd in %s", pothole_dir)
             continue
         if len(pcd_files) > 1:
-            logging.debug("Multiple .pcd files in %s; using %s", pothole_dir, pcd_files[0].name)
+            # Log error and continue
+            logging.error("Multiple .pcd files in %s; using %s", pothole_dir, pcd_files[0].name)
+            continue
 
         pcd_path = pcd_files[0]
         logging.info("Processing: %s", pcd_path)
 
         # Run estimate_depth and capture output
-        output_text = run_estimate_depth(estimate_script, pcd_path, cwd=pothole_dir, extra_args=extra)
+        output_text = run_estimate_depth(estimate_script, pcd_path, cwd=pothole_dir, cfg_path=cfg_path)
         if not output_text:
             logging.warning("No output produced for %s", pcd_path)
 

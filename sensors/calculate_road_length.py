@@ -2,6 +2,8 @@ import numpy as np
 import argparse
 import os
 
+from common.config import load_config
+
 def calculate_route_length(filename):
     """
     Calculates the total length of a 3D route from an odometry file.

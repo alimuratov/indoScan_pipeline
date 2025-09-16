@@ -13,7 +13,7 @@ What it does:
   {"vertical_displacement": <float>, "video_timestamp": "<int_seconds>"}.
 
 How to use:
-    python scripts/process_imu.py /path/to/imu_file.txt [output.json]
+    python process_imu.py /path/to/imu_file.txt [output.json]
 
 Input expectations:
 - Text file with lines like:
