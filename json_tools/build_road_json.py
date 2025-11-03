@@ -156,8 +156,12 @@ def load_imu_entries_from_segment(segment_dir: str) -> List[Dict]:
                 if isinstance(data, list):
                     merged.extend(data)
         except Exception:
-            logging.exception("Failed to read imu.json: %s", path)
-            continue
+            from exceptions.exceptions import StepPreconditionError
+            raise StepPreconditionError(
+                "IMU_JSON_READ_FAILED",
+                f"Failed to read imu.json: {path}",
+                context="build_road_json.load_imu_entries_from_segment",
+            )
     # Normalize and sort unique by video_timestamp (string) cast to float
     seen_ts = set()
     normalized: List[Dict] = []
@@ -198,7 +202,12 @@ def load_segment_depth_data(segment_dir: str) -> Optional[List[Dict]]:
                         if isinstance(data, list):
                             return data
                 except Exception:
-                    logging.exception("Failed to load depth timestamps JSON in %s", dirpath)
+                    from exceptions.exceptions import StepPreconditionError
+                    raise StepPreconditionError(
+                        "DEPTH_TIMESTAMPS_JSON_READ_FAILED",
+                        f"Failed to load depth timestamps JSON in {dirpath}",
+                        context="build_road_json.load_segment_depth_data",
+                    )
     return None
 
 
@@ -230,7 +239,12 @@ def parse_potholes(segment_dir: str, road_segment_id: str, target_roads_dir: str
                 if isinstance(data, list):
                     segment_gps_data = data
         except Exception:
-            logging.exception("Failed to read %s", seg_gps_json)
+            from exceptions.exceptions import StepPreconditionError
+            raise StepPreconditionError(
+                "SEGMENT_GPS_JSON_READ_FAILED",
+                f"Failed to read {seg_gps_json}",
+                context="build_road_json.build_segment_payload",
+            )
     potholes: List[Dict] = []
 
     for pothole_dir in pothole_dirs:
@@ -270,7 +284,12 @@ def parse_potholes(segment_dir: str, road_segment_id: str, target_roads_dir: str
                     volume = meta.get("volume")
                     area = meta.get("area")
             except Exception:
-                logging.exception("Failed to read %s", meta_path)
+                from exceptions.exceptions import StepPreconditionError
+                raise StepPreconditionError(
+                    "POTHOLE_META_JSON_READ_FAILED",
+                    f"Failed to read {meta_path}",
+                    context="build_road_json.parse_potholes",
+                )
 
         # Position from GPS nearest to image timestamp (if image exists)
         lat = 0.0
@@ -403,7 +422,12 @@ def build_segment_payload(road_dir: str, segment_dir: str, road_id: str, target_
             with open(seg_gps_json, "r") as f:
                 gps_data = json.load(f)
         except Exception:
-            logging.exception("Failed to read %s", seg_gps_json)
+            from exceptions.exceptions import StepPreconditionError
+            raise StepPreconditionError(
+                "SEGMENT_GPS_JSON_READ_FAILED",
+                f"Failed to read {seg_gps_json}",
+                context="build_road_json.build_segment_payload",
+            )
 
     depth_data = None
     depth_json = os.path.join(segment_dir, "segment_depth_timestamps.json")
@@ -414,7 +438,12 @@ def build_segment_payload(road_dir: str, segment_dir: str, road_id: str, target_
                 if isinstance(data, list):
                     depth_data = data
         except Exception:
-            logging.exception("Failed to read %s", depth_json)
+            from exceptions.exceptions import StepPreconditionError
+            raise StepPreconditionError(
+                "SEGMENT_DEPTH_JSON_READ_FAILED",
+                f"Failed to read {depth_json}",
+                context="build_road_json.build_segment_payload",
+            )
     potholes = parse_potholes(segment_dir, road_segment_id, target_roads_dir, road_id, road_segment_id)
 
     length_in_km = 0.0
@@ -429,7 +458,12 @@ def build_segment_payload(road_dir: str, segment_dir: str, road_id: str, target_
                 if not end_loc:
                     end_loc = meta.get("end_loc") or end_loc
         except Exception:
-            logging.exception("Failed to read %s", seg_meta_json)
+            from exceptions.exceptions import StepPreconditionError
+            raise StepPreconditionError(
+                "SEGMENT_META_JSON_READ_FAILED",
+                f"Failed to read {seg_meta_json}",
+                context="build_road_json.build_segment_payload",
+            )
 
     payload = {
         "id": road_segment_id,
@@ -487,34 +521,28 @@ def build_roads_json_from_target(target_roads_dir: str) -> Dict:
 # ------------------------------------ main --------------------------------- #
 
 
+from common.cli import add_config_arg, add_log_level_arg, parse_args_with_config, setup_logging
+
 def build_parser(argv: Optional[List[str]] = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build consolidated road JSON from target tree.")
-    parser.add_argument("--config", help="Path to config file.")
-    parser.add_argument("--target-roads-dir", default=os.path.join("data", "Roads"), help="Target Roads directory root; JSON paths are relative to here.")
-    parser.add_argument("--output", default="road-scanning-POC-json.json", help="Path to output JSON file.")
-    parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR).")
+    add_config_arg(parser); add_log_level_arg(parser)
+    parser.add_argument("--target-roads-dir", help="Target Roads directory root; JSON paths are relative to here.")
+    parser.add_argument("--output", help="Path to output JSON file.")
     return parser
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    p = build_parser(argv)
-    cfg_path = p.parse_known_args()[0].config
-
-    from common.config import load_config
-    cfg = load_config(cfg_path)
-
-    p.set_defaults(
-        target_roads_dir=cfg.paths.target_roads_dir,
-        output=cfg.paths.json_out,
-        log_level=cfg.logging.level,
+    args, cfg = parse_args_with_config(
+        lambda: build_parser(argv),
+        lambda c: dict(
+            target_roads_dir=c.paths.target_roads_root,
+            output=c.paths.json_out,
+            log_level=c.logging.level,
+        ),
+        argv,
     )
 
-    args = p.parse_args()
-
-    logging.basicConfig(
-        level=getattr(logging, str(args.log_level).upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
+    setup_logging(args.log_level)
 
     output_path = os.path.abspath(args.output)
     target_roads_dir = os.path.abspath(args.target_roads_dir)
@@ -528,7 +556,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     with open(output_path, "w") as f:
         json.dump(payload, f, indent=2)
 
-    logging.info("Wrote JSON: %s", output_path)
+    logging.debug("Wrote JSON: %s", output_path)
     total_roads = len(payload.get("roads", []))
     total_segments = sum(len(r.get("road_segments", [])) for r in payload.get("roads", []))
     logging.info("Included roads: %d, segments: %d", total_roads, total_segments)

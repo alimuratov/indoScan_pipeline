@@ -57,8 +57,13 @@ def save_depth_heatmap(
         pass
 
 
-def plane_mesh_covering_cloud(pcd, plane_model, color=(0.2, 0.6, 1.0)):
-    """Create an Open3D mesh for the fitted plane that covers the cloud AABB."""
+def plane_mesh_covering_cloud(pcd, plane_model, extent_pts=None, margin: float = 0.1, color=(0.2, 0.6, 1.0)):
+    """Create an Open3D mesh for the fitted plane sized to points of interest.
+
+    - If extent_pts is provided (Nx3), the plane quad bounds only those points
+      (plus a small margin in meters). Otherwise, it falls back to the cloud AABB.
+    - Returns a 2-triangle quad (first 4 vertices) colored uniformly.
+    """
     try:
         import open3d as o3d
         import numpy as np
@@ -70,34 +75,67 @@ def plane_mesh_covering_cloud(pcd, plane_model, color=(0.2, 0.6, 1.0)):
     n_norm = np.linalg.norm(n) + 1e-12
     n = n / n_norm
     d = d / n_norm
+    # !! Normalize plane so normal has unit length; keeps extents and distances consistent
 
     # Build orthonormal basis {n, u, v}
     a_vec = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
     u = np.cross(n, a_vec)
     u = u / (np.linalg.norm(u) + 1e-12)
     v = np.cross(n, u)
+    # !! Create two in-plane unit vectors (u, v) orthogonal to the normal n
 
     pts = np.asarray(pcd.points)
     if pts.size == 0:
         return None
-    centroid = pts.mean(axis=0)
-    t = (np.dot(n, centroid) + d)
-    center = centroid - t * n
 
-    aabb = pcd.get_axis_aligned_bounding_box()
-    diag = np.linalg.norm(aabb.get_extent())
-    half = 0.5 * diag * 1.05
+    # Choose centroid source
+    if extent_pts is not None and hasattr(extent_pts, "size") and np.asarray(extent_pts).size > 0:
+        extent_pts_np = np.asarray(extent_pts, dtype=float)
+        centroid_world = extent_pts_np.mean(axis=0)
+    else:
+        centroid_world = pts.mean(axis=0)
+    # !! Center the quad around the centroid of the selected points (or entire cloud)
 
-    v0 = center + (-half) * u + (-half) * v
-    v1 = center + (half) * u + (-half) * v
-    v2 = center + (half) * u + (half) * v
-    v3 = center + (-half) * u + (half) * v
+    # Project centroid onto plane to get the quad center
+    t = (np.dot(n, centroid_world) + d)
+    center = centroid_world - t * n
+    # !! Move the centroid onto the plane to serve as the quad center
+
+    if extent_pts is not None and hasattr(extent_pts, "size") and np.asarray(extent_pts).size > 0:
+        # Compute extents in plane-local coordinates for the provided points
+        rel = np.asarray(extent_pts, dtype=float) - center
+        u_coords = rel @ u
+        v_coords = rel @ v
+        umin, umax = float(u_coords.min() - margin), float(u_coords.max() + margin)
+        vmin, vmax = float(v_coords.min() - margin), float(v_coords.max() + margin)
+        # !! Project points into (u,v) plane coordinates and expand bounds by margin (meters)
+        corners_local = np.array([
+            [umin, vmin],
+            [umax, vmin],
+            [umax, vmax],
+            [umin, vmax],
+        ], dtype=float)
+        v0 = center + corners_local[0, 0] * u + corners_local[0, 1] * v
+        v1 = center + corners_local[1, 0] * u + corners_local[1, 1] * v
+        v2 = center + corners_local[2, 0] * u + corners_local[2, 1] * v
+        v3 = center + corners_local[3, 0] * u + corners_local[3, 1] * v
+    else:
+        # Fallback: cover the whole cloud AABB with a small scale factor
+        aabb = pcd.get_axis_aligned_bounding_box()
+        diag = np.linalg.norm(aabb.get_extent())
+        half = 0.5 * diag * 1.05
+        # !! No specific points given: use overall cloud size as a conservative plane extent
+        v0 = center + (-half) * u + (-half) * v
+        v1 = center + (half) * u + (-half) * v
+        v2 = center + (half) * u + (half) * v
+        v3 = center + (-half) * u + (half) * v
 
     verts = o3d.utility.Vector3dVector(np.stack([v0, v1, v2, v3], axis=0))
     tris = o3d.utility.Vector3iVector(np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32))
     mesh = o3d.geometry.TriangleMesh(vertices=verts, triangles=tris)
     mesh.paint_uniform_color(color)
     mesh.compute_vertex_normals()
+    # !! First 4 vertices define a quad; two triangles render the plane surface
     return mesh
 
 

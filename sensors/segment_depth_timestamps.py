@@ -13,7 +13,7 @@ pot-hole subfolder is expected to contain:
   ``Surface-based max depth: 0.0259 m`` from which the pothole's depth (in
   meters) is parsed.
 
-The earliest timestamp in the segment's reference images folder is treated as
+The earliest timestamp in the segment's raw images folder is treated as
 the video's start time. For every pothole subfolder discovered under the
 segment directory, the script computes the pothole's relative timestamp
 (seconds since the first image) and emits a compact JSON list with objects of
@@ -48,8 +48,13 @@ Directory structure (example):
 import os
 import json
 import argparse
+import logging
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple
+from exceptions.exceptions import StepPreconditionError
+from common.discovery import discover_pothole_dirs
 
-def process_pothole_folder(pothole_folder):
+def process_pothole_folder(pothole_folder: str) -> Tuple[Optional[str], Optional[float]]:
     """Extract the first image timestamp and parsed depth for a pothole folder.
 
     The function looks for any ``.jpg`` or ``.png`` file inside
@@ -82,7 +87,7 @@ def process_pothole_folder(pothole_folder):
             break  # Only need the first image
     
     if not timestamp:
-        print(f"No image found in {pothole_folder}")
+        logging.warning("No image found in pothole folder: %s", pothole_folder)
         return None, None
     
     # retrieve the depth value specified like this: "Surface-based max depth: 0.0259 m" from the output.txt file
@@ -95,14 +100,14 @@ def process_pothole_folder(pothole_folder):
                     try:
                         depth = float(depth_str)
                     except ValueError:
-                        print(f"Invalid depth value '{depth_str}' in {output_file}")
+                        logging.warning("Invalid depth value '%s' in %s", depth_str, output_file)
                         return timestamp, None
                     return timestamp, depth
 
-    print(f"No depth found for timestamp {timestamp} in {pothole_folder}")
+    logging.warning("No depth found for timestamp %s in pothole folder: %s", timestamp, pothole_folder)
     return timestamp, None
 
-def process_segment_folder(segment_folder, images_folder_name="raw_images"):
+def process_segment_folder(segment_folder: str, images_folder_name: str = "raw_images") -> List[Dict]:
     """Collect depth/timestamp entries for all potholes within a segment folder.
 
     Determines the earliest reference timestamp by scanning
@@ -128,8 +133,7 @@ def process_segment_folder(segment_folder, images_folder_name="raw_images"):
     # Determine earliest reference timestamp from the images folder
     images_dir = os.path.join(segment_folder, images_folder_name)
     if not os.path.isdir(images_dir):
-        print(f"Image folder not found: {images_dir}")
-        return []
+        raise StepPreconditionError("IMAGE_FOLDER_NOT_FOUND", f"Image folder not found: {images_dir}", context="segment_depth_timestamps")
 
     timestamps = []
     for filename in os.listdir(images_dir):
@@ -137,7 +141,7 @@ def process_segment_folder(segment_folder, images_folder_name="raw_images"):
         if ext.lower() == ".jpg":
             timestamps.append(name)
     if not timestamps:
-        print("No images found in the image folder")
+        logging.warning("No images found in the image folder: %s", images_dir)
         return []
 
     timestamps.sort()
@@ -146,25 +150,43 @@ def process_segment_folder(segment_folder, images_folder_name="raw_images"):
     # Collect entries for this segment folder
     data_list = []
     # Go over each pothole folder in the segment folder
-    for pothole_folder in os.listdir(segment_folder):
-        pothole_path = os.path.join(segment_folder, pothole_folder)
-        if os.path.isdir(pothole_path):
-            timestamp, depth = process_pothole_folder(pothole_path)
-            if timestamp is None or depth is None:
-                continue
-            try:
-                # Calculate relative video timestamp in seconds and stringify
-                # round 6 digits
-                rel_seconds = round((float(timestamp) - float(first_timestamp)), 6)
-            except ValueError:
-                print(f"Invalid timestamp(s): {timestamp} or {first_timestamp}")
-                continue
-            json_data = {
-                "pothole_depth": depth,
-                "video_timestamp": str(rel_seconds),
-            }
-            data_list.append(json_data)
+    for pothole_folder in discover_pothole_dirs(Path(segment_folder)):
+        timestamp, depth = process_pothole_folder(pothole_folder)
+        if timestamp is None or depth is None:
+            continue
+        try:
+            # Calculate relative video timestamp in seconds and stringify
+            # round 6 digits
+            rel_seconds = round((float(timestamp) - float(first_timestamp)), 6)
+        except ValueError:
+            logging.warning("Invalid timestamp(s): %s or %s", timestamp, first_timestamp)
+            continue
+        json_data = {
+            "pothole_depth": depth,
+            "video_timestamp": str(rel_seconds),
+        }
+        data_list.append(json_data)
+    try:
+        data_list.sort(key=lambda x: float(x["video_timestamp"]))
+    except Exception:
+        from exceptions.exceptions import StepPreconditionError
+        raise StepPreconditionError(
+            "SEGMENT_DEPTH_SORT_FAILED",
+            f"Failed to sort data list for segment: {segment_folder}",
+            context="segment_depth_timestamps",
+        )
     return data_list
+
+def write_depth_timestamps(entries: List[Dict], output_path: str) -> None:
+    """Write the aggregated entries to JSON.
+
+    Creates parent directories if missing.
+    """
+    parent = os.path.dirname(output_path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent, exist_ok=True)
+    with open(output_path, "w") as json_file:
+        json.dump(entries, json_file, indent=4)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Aggregate pothole depths and relative video timestamps into JSON for a single segment.")
@@ -185,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     return parser
 
-def main():
+def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for aggregating pothole depths and relative timestamps for a segment.
 
     This function determines the earliest reference timestamp from the
@@ -206,22 +228,19 @@ def main():
         Writes a JSON file to the path specified by ``--output``.
     """
     p = build_parser()
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     # Process the provided root_dir as a single segment folder
     root_dir = args.root_dir
     output_path = args.output
     images_folder_name = args.images_folder_name
+
     aggregated_list = process_segment_folder(root_dir, images_folder_name)
+    write_depth_timestamps(aggregated_list, output_path)
 
-    # sort aggregated_list entries by the timestamp field
-    aggregated_list.sort(key=lambda x: float(x["video_timestamp"]))
-
-    # Write the aggregated json data to a file
-    with open(output_path, "w") as json_file:
-        json.dump(aggregated_list, json_file, indent=4)
+    logging.info("Data written to %s with %d entries", output_path, len(aggregated_list))
+    return 0
     
-    print(f"Data written to {output_path} with {len(aggregated_list)} entries")
-
 if __name__ == "__main__":
-    main()
+    import sys
+    sys.exit(main())

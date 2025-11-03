@@ -1,7 +1,6 @@
 import os
-import json
 import yaml
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, fields
 from typing import Optional
 
 
@@ -16,15 +15,15 @@ class Paths:
     source_roads_root: str = ""
     target_roads_root: str = ""
     roads_root: str = ""
-    target_roads_dir: str = "output/data2/Roads"
     manifest_out: str = "output/data2/copy_manifest.json"
     json_out: str = "output/data2/trial_output.json"
     images_folder_name: str = "raw_images"
-    odometry_filename: str = "imu.txt"
+    imu_filename: str = "imu.txt"
+    gps_filename: str = "gps.txt"
     estimate_script: str = "estimate_pothole_params.py"
     hull_plot_path: Optional[str] = None
     surface_heatmap_path: Optional[str] = None
-
+    scripts_root: str = "scripts"
 
 @dataclass(frozen=True)
 class Logging:
@@ -47,6 +46,10 @@ class Processing:
     hull_plot_path: Optional[str] = None
     surface_heatmap_path: Optional[str] = None
     save_hull_2d: bool = False
+    scripts_root: str = "scripts"
+    process_gps_input_filename: str = "gps.txt"
+    estimate_script: str = "estimate_pothole_params.py"
+    save_pothole_points_with_fitted_plane: bool = False
 
 
 @dataclass(frozen=True)

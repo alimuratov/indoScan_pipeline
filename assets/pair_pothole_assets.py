@@ -59,7 +59,7 @@ def ensure_dir(path: Path) -> None:
 def pair_pothole_assets(pcd_dir: Path, img_dir: Path, dest_dir: Path, start_id: int, zero_pad: int, move: bool, log_level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, str(log_level).upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(message)s",
+        format="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
     )
 
     ensure_dir(dest_dir)
@@ -105,8 +105,8 @@ def pair_pothole_assets(pcd_dir: Path, img_dir: Path, dest_dir: Path, start_id: 
             shutil.copy2(str(pcd_path), dest_pcd)
             shutil.copy2(str(img_path), dest_img)
 
-        logging.info("%s → %s | %s → %s", pcd_path.name, dest_pcd, img_path.name, dest_img)
+        logging.debug("%s → %s | %s → %s", pcd_path.name, dest_pcd, img_path.name, dest_img)
         count += 1
         current_id += 1
 
-    logging.info("Paired %d pothole folder(s) under: %s", count, dest_dir)
+    logging.debug("Paired %d pothole folder(s) under: %s", count, dest_dir)

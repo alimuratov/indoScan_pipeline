@@ -7,15 +7,16 @@ It only parses CLI arguments and invokes the pipeline with the selected options.
 from __future__ import annotations
 
 import argparse
+from common.cli import add_config_arg, parse_args_with_config
 
-from pcdtools.pipeline import run_geometry_pipeline
+from pcdtools.pipeline import run_geometry_pipeline, analyze_pothole_geometry
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Estimate pothole depths/areas/volumes from a colored point cloud"
     )
-    parser.add_argument("--config", help="Path to config file.")
+    add_config_arg(parser)
     parser.add_argument("pcd_path", help="Path to input point cloud (PCD/PLY/etc.)")
     parser.add_argument(
         "--eps",
@@ -64,25 +65,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    p = build_parser()
+    def _defaults_from_cfg(cfg):
+        return dict(
+            eps=cfg.processing.eps,
+            summary_only=cfg.processing.summary_only,
+            save_hull_2d=cfg.processing.save_hull_2d,
+            hull_plot_path=cfg.processing.hull_plot_path,
+            aggregate_all=cfg.processing.aggregate_all,
+            visualize_3d=cfg.processing.visualize_3d,
+            save_surface_heatmap=cfg.processing.save_surface_heatmap,
+            surface_heatmap_path=cfg.processing.surface_heatmap_path,
+            save_pothole_points_with_fitted_plane=cfg.processing.save_pothole_points_with_fitted_plane
+        )
 
-    cfg_path = p.parse_known_args()[0].config
-
-    from common.config import load_config
-    cfg = load_config(cfg_path)
-
-    p.set_defaults(
-        eps=cfg.processing.eps,
-        summary_only=cfg.processing.summary_only,
-        save_hull_2d=cfg.processing.save_hull_2d,
-        hull_plot_path=cfg.processing.hull_plot_path,
-        aggregate_all=cfg.processing.aggregate_all,
-        visualize_3d=cfg.processing.visualize_3d,
-        save_surface_heatmap=cfg.processing.save_surface_heatmap,
-        surface_heatmap_path=cfg.processing.surface_heatmap_path,
-    )
-
-    args = p.parse_args()
+    args, cfg = parse_args_with_config(build_parser, _defaults_from_cfg)
 
     eps_val = args.eps
     if args.summary_only and not args.aggregate_all and eps_val < 1e6:
@@ -98,6 +94,27 @@ def main() -> None:
         visualize_3d=args.visualize_3d,
         save_surface_heatmap=args.save_surface_heatmap,
         surface_heatmap_path=args.surface_heatmap_path,
+        save_pothole_points_with_fitted_plane=args.save_pothole_points_with_fitted_plane,
+    )
+
+
+def estimate_pothole_params(
+    pcd_path: str,
+    *,
+    eps: float = 0.1,
+    summary_only: bool = False,
+    aggregate_all: bool = False,
+) -> dict:
+    """Convenient function API for callers.
+
+    Returns a dict with structured results 
+    """
+
+    run_geometry_pipeline(
+        pcd_path,
+        eps=eps,
+        summary_only=summary_only,
+        aggregate_all=aggregate_all,
     )
 
 

@@ -1,7 +1,7 @@
 import numpy as np
 import argparse
 import os
-
+import logging
 from common.config import load_config
 
 def calculate_route_length(filename):
@@ -22,22 +22,21 @@ def calculate_route_length(filename):
             # Split the line by whitespace
             parts = line.strip().split()
             # Ensure the line has enough data (at least 4 values: timestamp, x, y, z)
-            if len(parts) >= 4:
+            if parts[0] != "#" and len(parts) >= 4:
                 try:
                     x = float(parts[1])
                     y = float(parts[2])
                     z = float(parts[3])
                     positions.append([x, y, z])
                 except ValueError:
-                    # Skip lines with invalid data
-                    print(f"Warning: Could not parse line: {line}")
+                    logging.warning("Could not parse line: %s", line)
                     continue
 
     # Convert to numpy array for easier calculations
     positions = np.array(positions)
 
     if len(positions) < 2:
-        print("Not enough valid points to calculate a distance.")
+        logging.warning("Not enough valid points to calculate a distance.")
         return 0.0
 
     # Calculate the cumulative sum of distances between consecutive points
@@ -57,4 +56,4 @@ if __name__ == "__main__":
     input_path = os.path.abspath(args.filename)
     total_distance_meters = calculate_route_length(input_path)
     total_distance_km = total_distance_meters / 1000.0
-    print(f"Total route length: {total_distance_meters:.2f} meters ({total_distance_km:.5f} km)")
+    logging.info(f"Total route length: {total_distance_meters:.2f} meters ({total_distance_km:.5f} km)")

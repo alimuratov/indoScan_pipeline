@@ -95,18 +95,15 @@ def process_imu_file(filename, output_filename='output.json'):
                 next_time += interval
 
                 # Log the original line used for this sample (optional)
-                print(line)
+                # print(line)
 
     if not data_points:
-        print("No valid data found in file")
+#// print("No valid data found in file")
         return
     
     # Write to JSON file
     with open(output_filename, 'w') as f:
         json.dump(data_points, f, indent=2)
-    
-    print(f"JSON file created: {output_filename}")
-    print(f"Total data points: {len(data_points)}")
 
     return data_points
 
@@ -132,7 +129,7 @@ def printTotalDuration(filename):
         lines = f.readlines()
 
     if len(lines) < 2: 
-        print("File is too short to calculate duration.")
+        # print("File is too short to calculate duration.")
         return
 
     # Locate first non-comment line to get the starting timestamp
@@ -146,7 +143,7 @@ def printTotalDuration(filename):
     last_timestamp = lines[-1].strip().split()[0]
     total_duration = float(last_timestamp) - float(first_timestamp)
 
-    print(f"Total duration: {total_duration} seconds")
+    # print(f"Total duration: {total_duration} seconds")
 
 
 if __name__ == "__main__":

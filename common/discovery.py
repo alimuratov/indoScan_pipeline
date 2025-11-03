@@ -1,21 +1,32 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import List
 
 from .fs import list_immediate_subdirs
 
+IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
 def is_pothole_dir(path: str) -> bool:
+    path = Path(path).resolve()
     try:
-        names = set(os.listdir(path))
+        names = {p.name.lower() for p in path.iterdir() if p.is_file()}
     except Exception:
         return False
-    has_artifact = any(
-        any(name.lower().endswith(ext) for ext in (".jpg", ".png", ".pcd"))
-        for name in names
-    ) or ("output.txt" in names)
-    return has_artifact
+    has_pcd = any(n.endswith(".pcd") for n in names)
+    has_img = any(any(n.endswith(ext) for ext in IMAGE_EXTS) for n in names)
+    return has_pcd and has_img
+
+def discover_pothole_dirs(root: Path) -> List[Path]:
+    if is_pothole_dir(root):
+        return [root]
+    out: List[Path] = []
+    for dirpath, dirnames, _ in os.walk(root):
+        d = Path(dirpath)
+        if is_pothole_dir(d):
+            out.append(d)
+    return out
 
 
 def is_segment_dir(path: str) -> bool:
@@ -66,3 +77,12 @@ def discover_target_segments(road_dir: str) -> List[str]:
         ]
     except Exception:
         return []
+
+def discover_segments(root: str) -> List[str]:
+    segments: List[str] = []
+    for dirpath, dirnames, _ in os.walk(root):
+        for d in dirnames:
+            if is_segment_dir(os.path.join(dirpath, d)):
+                segments.append(os.path.join(dirpath, d))
+    return segments
+

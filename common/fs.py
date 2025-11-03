@@ -56,9 +56,13 @@ def copy_asset(src_path: str, dst_abs_path: str) -> bool:
         shutil.copy2(src_path, dst_abs_path)
         logging.info("Copied asset: %s -> %s", src_path, dst_abs_path)
         return True
-    except Exception:
-        logging.exception("Failed to copy asset: %s -> %s", src_path, dst_abs_path)
-        return False
+    except Exception as e:
+        from exceptions.exceptions import StepPreconditionError
+        raise StepPreconditionError(
+            "COPY_ASSET_FAILED",
+            f"Failed to copy asset: {src_path} -> {dst_abs_path}",
+            context="common.fs.copy_asset",
+        ) from e
 
 
 def find_first_matching_file(root_dir: str, patterns: Tuple[str, ...]) -> Optional[str]:
@@ -96,20 +100,20 @@ def ensure_parent_dir(path: str) -> None:
     """Ensure parent directory exists for a given file path."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
-def copy_asset(src_path: str, dst_abs_path: str) -> bool:
-    """Copy a file to destination, logging success/failure.
+class CopyError(Exception):
+    pass
 
-    Interaction: Called when copying survey videos, lidar scans, and images
-    into the target tree so that JSON can reference them consistently.
+def copy_asset(src_path: str, dst_abs_path: str) -> bool:
+    """Copy a file, raising CopyError on failure.
+
+    Leaf function: no logging here; caller decides how to report. 
     """
+    ensure_parent_dir(dst_abs_path)
     try:
-        ensure_parent_dir(dst_abs_path)
         shutil.copy2(src_path, dst_abs_path)
-        logging.info("Copied asset: %s -> %s", src_path, dst_abs_path)
-        return True
-    except Exception:
-        logging.exception("Failed to copy asset: %s -> %s", src_path, dst_abs_path)
-        return False
+    except Exception as e:
+        raise CopyError(f"Copy failed: {src_path} -> {dst_abs_path}") from e
+
 
 def find_first_matching_file(root_dir: str, patterns: Tuple[str, ...]) -> Optional[str]:
     """Find first file whose lowercase name contains any pattern.

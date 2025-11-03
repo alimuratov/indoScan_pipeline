@@ -189,7 +189,7 @@ def main() -> None:
         out_path = Path(args.out).resolve() if args.out else json_path.with_suffix(".with_area.json")
 
     write_json(out_path, payload)
-    logging.info("Wrote updated JSON: %s (areas updated: %d, misses: %d)", out_path, updates, misses)
+    logging.info("updated JSON: %s (areas updated: %d, misses: %d)", out_path, updates, misses)
 
 
 if __name__ == "__main__":

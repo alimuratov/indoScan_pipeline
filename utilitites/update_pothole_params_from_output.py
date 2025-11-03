@@ -243,7 +243,7 @@ def main() -> None:
         out_path = Path(args.out).resolve() if args.out else json_path.with_suffix(".updated.json")
 
     write_json(out_path, payload)
-    logging.info("Wrote updated JSON: %s (potholes updated: %d, misses: %d)", out_path, updates, misses)
+    logging.debug("Wrote updated JSON: %s (potholes updated: %d, misses: %d)", out_path, updates, misses)
 
 
 if __name__ == "__main__":
