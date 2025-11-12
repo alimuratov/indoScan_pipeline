@@ -9,7 +9,12 @@ from __future__ import annotations
 import argparse
 from common.cli import add_config_arg, parse_args_with_config
 
-from pcdtools.pipeline import run_geometry_pipeline, analyze_pothole_geometry
+from pcdtools.pipeline import (
+    run_geometry_pipeline,
+    analyze_pothole_geometry,
+    VisualizationConfig,
+    OutputPathsConfig,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,7 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Estimate pothole depths/areas/volumes from a colored point cloud"
     )
     add_config_arg(parser)
-    parser.add_argument("pcd_path", help="Path to input point cloud (PCD/PLY/etc.)")
+    parser.add_argument(
+        "pcd_path", help="Path to input point cloud (PCD/PLY/etc.)")
     parser.add_argument(
         "--eps",
         type=float,
@@ -69,13 +75,13 @@ def main() -> None:
         return dict(
             eps=cfg.processing.eps,
             summary_only=cfg.processing.summary_only,
+            aggregate_all=cfg.processing.aggregate_all,
             save_hull_2d=cfg.processing.save_hull_2d,
             hull_plot_path=cfg.processing.hull_plot_path,
-            aggregate_all=cfg.processing.aggregate_all,
             visualize_3d=cfg.processing.visualize_3d,
             save_surface_heatmap=cfg.processing.save_surface_heatmap,
             surface_heatmap_path=cfg.processing.surface_heatmap_path,
-            save_pothole_points_with_fitted_plane=cfg.processing.save_pothole_points_with_fitted_plane
+            save_pothole_points_with_fitted_plane=cfg.processing.save_pothole_points_with_fitted_plane,
         )
 
     args, cfg = parse_args_with_config(build_parser, _defaults_from_cfg)
@@ -84,17 +90,24 @@ def main() -> None:
     if args.summary_only and not args.aggregate_all and eps_val < 1e6:
         eps_val = 1e6
 
+    viz = VisualizationConfig(
+        visualize_3d=args.visualize_3d,
+        save_hull_2d=args.save_hull_2d,
+        save_surface_heatmap=args.save_surface_heatmap,
+        save_pothole_points_with_fitted_plane=args.save_pothole_points_with_fitted_plane,
+    )
+    paths = OutputPathsConfig(
+        hull_plot_path=args.hull_plot_path,
+        surface_heatmap_path=args.surface_heatmap_path,
+    )
+
     run_geometry_pipeline(
         args.pcd_path,
         eps=eps_val,
         summary_only=args.summary_only,
-        save_hull_2d=args.save_hull_2d,
-        hull_plot_path=args.hull_plot_path,
         aggregate_all=args.aggregate_all,
-        visualize_3d=args.visualize_3d,
-        save_surface_heatmap=args.save_surface_heatmap,
-        surface_heatmap_path=args.surface_heatmap_path,
-        save_pothole_points_with_fitted_plane=args.save_pothole_points_with_fitted_plane,
+        visualization=viz,
+        output_paths=paths,
     )
 
 

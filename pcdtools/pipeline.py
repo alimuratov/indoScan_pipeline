@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 import numpy as np
 from typing import Optional, Dict, Final, Any
@@ -8,242 +9,301 @@ import open3d as o3d
 from .io import read_point_cloud, classify_points_by_color
 from .plane import segment_plane_road, compute_depths_from_plane, filter_pothole_depths
 from .cluster import dbscan_labels
-from .analysis import per_pothole_summary, fit_quadratic_surface, surface_depth_grid
-from .visualize import save_hull_plot, save_depth_heatmap, visualize_plane_and_potholes, plane_mesh_covering_cloud
+from .analysis import per_pothole_summary
+from .visualize import visualize_plane_and_potholes
+from .strategies import TrianglePruningStrategy, PerimeterOnlyPruningStrategy
+from .presenters import (
+    cluster_name,
+    print_cluster_summary,
+    print_pipeline_header,
+    print_overall_stats,
+    print_aggregated_stats,
+)
+from .exporters import export_artifacts_for_cluster
 
 
 # Constants
 EPS_MAX: Final[float] = 1e6
 
-
-def _get_output_path(base_path: str, cluster_id: Optional[int], default_ext: str = ".png") -> str:
-    """Generate output path with optional cluster suffix."""
-    if cluster_id is None:
-        return base_path
-    base, ext = os.path.splitext(base_path)
-    return f"{base}_cluster_{cluster_id}{ext or default_ext}"
+"""Dataclasses for visualization options and output path configuration."""
 
 
-def _validate_points_for_export(points: np.ndarray, min_points: int = 3) -> bool:
-    """Common validation for point-based exports."""
-    return points.ndim == 2 and points.shape[1] == 3 and points.shape[0] >= min_points
+class PipelineBuilder:
+    """Fluent API builder for configuring and running the pothole geometry pipeline.
+
+    Example:
+        result = (PipelineBuilder("pothole.pcd")
+            .with_clustering(eps=0.2)
+            .with_hull_plot("hull.png")
+            .with_tin_mesh("tin.ply")
+            .with_3d_visualization()
+            .run())
+    """
+
+    def __init__(self, pcd_path: str):
+        """Initialize builder with input point cloud path."""
+        self.pcd_path = pcd_path
+        self.eps = 0.1
+        self.summary_only = False
+        self.aggregate_all = False
+        self.plane_extent_margin = 0.1
+        self.plane_with_hole_grid_res = 64
+        self._viz_config = VisualizationConfig()
+        self._out_config = OutputPathsConfig()
+        self._triangle_pruning: Optional[TrianglePruningStrategy] = None
+
+    # Clustering configuration
+    def with_clustering(self, eps: float = 0.1) -> "PipelineBuilder":
+        """Configure DBSCAN clustering epsilon."""
+        self.eps = eps
+        self.summary_only = False
+        return self
+
+    def without_clustering(self) -> "PipelineBuilder":
+        """Disable clustering (single pothole mode)."""
+        self.summary_only = True
+        return self
+
+    def with_aggregation(self) -> "PipelineBuilder":
+        """Enable aggregated metrics across clusters."""
+        self.aggregate_all = True
+        return self
+
+    # Visualization configuration
+    def with_3d_visualization(self, enable: bool = True) -> "PipelineBuilder":
+        """Enable/disable interactive 3D visualization."""
+        self._viz_config.visualize_3d = enable
+        return self
+
+    def with_overlay_visualization(self, enable: bool = True) -> "PipelineBuilder":
+        """Enable/disable mesh overlay visualization."""
+        self._viz_config.visualize_overlay = enable
+        return self
+
+    def with_hull_plot(self, path: Optional[str] = "hull.png") -> "PipelineBuilder":
+        """Save 2D convex hull plot."""
+        self._viz_config.save_hull_2d = True
+        self._out_config.hull_plot_path = path
+        return self
+
+    def with_surface_heatmap(self, path: Optional[str] = "heatmap.png") -> "PipelineBuilder":
+        """Save surface depth heatmap."""
+        self._viz_config.save_surface_heatmap = True
+        self._out_config.surface_heatmap_path = path
+        return self
+
+    def with_z_exaggeration(self, factor: float) -> "PipelineBuilder":
+        """Set Z-axis exaggeration factor for meshes."""
+        self._viz_config.tin_z_exaggeration = factor
+        return self
+
+    def with_pothole_plane_helper(self, enable: bool = True) -> "PipelineBuilder":
+        """Save helper mesh with fitted plane and pothole points."""
+        self._viz_config.save_pothole_points_with_fitted_plane = enable
+        return self
+
+    # Output paths configuration
+    def with_tin_mesh(self, path: str) -> "PipelineBuilder":
+        """Save TIN mesh to specified path."""
+        self._out_config.save_tin_mesh_path = path
+        return self
+
+    def with_tin_points(self, path: str) -> "PipelineBuilder":
+        """Save TIN vertices as point cloud."""
+        self._out_config.save_tin_points_path = path
+        return self
+
+    def with_complete_mesh(self, path: str) -> "PipelineBuilder":
+        """Save complete pothole mesh (TIN + walls)."""
+        self._out_config.save_complete_pothole_mesh_path = path
+        return self
+
+    def with_plane_mesh(self, path: str) -> "PipelineBuilder":
+        """Save standalone road plane mesh."""
+        self._out_config.save_plane_mesh_path = path
+        return self
+
+    def with_plane_with_hole(self, path: str) -> "PipelineBuilder":
+        """Save road plane mesh with pothole cut out."""
+        self._out_config.save_plane_with_hole_mesh_path = path
+        return self
+
+    def with_combined_mesh(self, path: str) -> "PipelineBuilder":
+        """Save combined mesh (pothole + plane-with-hole)."""
+        self._out_config.save_combined_mesh_path = path
+        return self
+
+    def with_overlay_mesh(self, path: str) -> "PipelineBuilder":
+        """Save overlay mesh (combined + input PCD as spheres)."""
+        self._out_config.save_overlay_with_pcd_mesh_path = path
+        return self
+
+    def with_delaunay_contrib_2d(self, path: str) -> "PipelineBuilder":
+        """Save 2D Delaunay contribution visualization."""
+        self._out_config.save_delaunay_contrib_2d_path = path
+        return self
+
+    def with_delaunay_contrib_3d(self, path: str) -> "PipelineBuilder":
+        """Save 3-view 3D Delaunay contribution visualization."""
+        self._out_config.save_delaunay_contrib_3d_multi_path = path
+        return self
+
+    # Advanced configuration
+    def with_pruning_strategy(self, strategy: TrianglePruningStrategy) -> "PipelineBuilder":
+        """Set custom triangle pruning strategy."""
+        self._triangle_pruning = strategy
+        return self
+
+    def with_plane_extent_margin(self, margin: float) -> "PipelineBuilder":
+        """Set margin around pothole extent for plane mesh."""
+        self.plane_extent_margin = margin
+        return self
+
+    def with_plane_grid_resolution(self, resolution: int) -> "PipelineBuilder":
+        """Set grid resolution for plane-with-hole mesh."""
+        self.plane_with_hole_grid_res = resolution
+        return self
+
+    def with_pcd_sphere_params(
+        self,
+        radius: float = 0.02,
+        max_points: int = 5000,
+        resolution: int = 3,
+        seed: int = 0
+    ) -> "PipelineBuilder":
+        """Configure PCD-to-spheres conversion parameters for overlay."""
+        self._viz_config.pcd_sphere_radius = radius
+        self._viz_config.pcd_max_points = max_points
+        self._viz_config.pcd_sphere_resolution = resolution
+        self._viz_config.pcd_random_seed = seed
+        return self
+
+    def with_visualization_config(self, config: VisualizationConfig) -> "PipelineBuilder":
+        """Set entire visualization config at once."""
+        self._viz_config = config
+        return self
+
+    def with_output_paths_config(self, config: OutputPathsConfig) -> "PipelineBuilder":
+        """Set entire output paths config at once."""
+        self._out_config = config
+        return self
+
+    # Execution
+    def run(self) -> None:
+        """Execute the configured pipeline."""
+        run_geometry_pipeline(
+            pcd_path=self.pcd_path,
+            eps=self.eps,
+            summary_only=self.summary_only,
+            aggregate_all=self.aggregate_all,
+            plane_extent_margin=self.plane_extent_margin,
+            plane_with_hole_grid_res=self.plane_with_hole_grid_res,
+            visualization=self._viz_config,
+            output_paths=self._out_config,
+            triangle_pruning=self._triangle_pruning,
+        )
+
+    def analyze(self) -> Dict[str, Any]:
+        """Execute analysis and return structured results instead of printing."""
+        return analyze_pothole_geometry(
+            pcd_path=self.pcd_path,
+            eps=self.eps,
+            summary_only=self.summary_only,
+            aggregate_all=self.aggregate_all,
+        )
 
 
-def _build_pruned_delaunay_triangles(
-    points: np.ndarray,
-    *,
-    edge_percentile: float = 99.0,
-    circ_percentile: float = 99.0,
-    min_circle_ratio: float = 0.005,
-) -> np.ndarray:
-    """Build Delaunay triangles with flatness and alpha pruning (consistent with TIN builder)."""
-    if points.shape[0] < 3:
-        return np.array([], dtype=np.int32).reshape(0, 3)
-    
-    try:
-        from .visualize_delaunay_volume import delaunay_tris
-        from .triangular_mesh_construction import _alpha_filter_triangles
-        import matplotlib.tri as mtri
-        
-        xy = points[:, :2]
-        tris = delaunay_tris(xy)
-        
-        # Flatness pruning
-        if tris.size > 0:
-            try:
-                tri_obj = mtri.Triangulation(xy[:, 0], xy[:, 1], tris)
-                analyzer = mtri.TriAnalyzer(tri_obj)
-                flat_mask = analyzer.get_flat_tri_mask(min_circle_ratio=min_circle_ratio)
-                tris = tris[~flat_mask]
-            except Exception:
-                pass
-        
-        # Alpha pruning
-        if tris.size > 0:
-            tris = _alpha_filter_triangles(xy, tris, edge_percentile=edge_percentile, circ_percentile=circ_percentile)
-        
-        return tris
-    except Exception:
-        return np.array([], dtype=np.int32).reshape(0, 3)
+@dataclass
+class VisualizationConfig:
+    visualize_3d: bool = False
+    visualize_overlay: bool = False
+    save_hull_2d: bool = False
+    save_surface_heatmap: bool = False
+    tin_z_exaggeration: float = 1.0
+    include_input_pcd_in_combined: bool = False
+    pcd_sphere_radius: float = 0.02
+    pcd_max_points: int = 5000
+    pcd_sphere_resolution: int = 3
+    pcd_random_seed: int = 0
+    save_pothole_points_with_fitted_plane: bool = False
 
 
-def _save_delaunay_contrib_images(
-    points: np.ndarray,
-    plane_model: np.ndarray,
-    *,
-    save_2d_path: Optional[str] = None,
-    save_3d_path: Optional[str] = None,
-    cluster_id: Optional[int] = None,
-) -> None:
-    """Save Delaunay contribution visualizations using pruned triangles."""
-    if not (save_2d_path or save_3d_path) or points.shape[0] < 3:
-        return
-    
-    try:
-        from .visualize_delaunay_volume import triangle_contributions, plot_2d_contrib, plot_3d_contrib_multi
-        
-        tris = _build_pruned_delaunay_triangles(points)
-        if tris.size == 0:
-            return
-        
-        xy = points[:, :2]
-        contrib, total = triangle_contributions(points, tris, tuple(plane_model))
-        
-        if save_2d_path:
-            final_2d_path = _get_output_path(save_2d_path, cluster_id, default_ext=".png")
-            plot_2d_contrib(xy, tris, contrib, final_2d_path, total)
-            print(f"      Saved Delaunay 2D contrib -> {final_2d_path}")
-        if save_3d_path:
-            final_3d_path = _get_output_path(save_3d_path, cluster_id, default_ext=".png")
-            plot_3d_contrib_multi(points, tris, contrib, final_3d_path)
-            print(f"      Saved Delaunay 3-view 3D contrib -> {final_3d_path}")
-    except Exception:
-        pass
+@dataclass
+class OutputPathsConfig:
+    hull_plot_path: Optional[str] = None
+    surface_heatmap_path: Optional[str] = None
+    save_delaunay_contrib_2d_path: Optional[str] = None
+    save_delaunay_contrib_3d_multi_path: Optional[str] = None
+    save_tin_mesh_path: Optional[str] = None
+    save_tin_points_path: Optional[str] = None
+    save_complete_pothole_mesh_path: Optional[str] = None
+    save_plane_with_hole_mesh_path: Optional[str] = None
+    save_combined_mesh_path: Optional[str] = None
+    save_overlay_with_pcd_mesh_path: Optional[str] = None
+    save_plane_mesh_path: Optional[str] = None
 
 
-def _save_tin_mesh_and_points(
-    points: np.ndarray,
-    plane_model: np.ndarray,
-    *,
-    mesh_path: Optional[str] = None,
-    points_path: Optional[str] = None,
-    complete_mesh_path: Optional[str] = None,
-    z_exaggeration: float = 1.0,
-    cluster_id: Optional[int] = None,
-) -> None:
-    """Save TIN mesh, complete mesh, and/or points, with optional cluster suffix."""
-    if not (mesh_path or points_path or complete_mesh_path) or not _validate_points_for_export(points):
-        return
-    
-    try:
-        from .triangular_mesh_construction import build_tin_mesh, build_complete_pothole_mesh, save_mesh
-        
-        # Build basic TIN mesh
-        mesh = build_tin_mesh(points, engine="auto", z_exaggeration=z_exaggeration)
-        
-        if mesh_path:
-            final_mesh_path = _get_output_path(mesh_path, cluster_id, default_ext=".ply")
-            save_mesh(mesh, final_mesh_path)
-            print(f"      Saved TIN mesh -> {final_mesh_path}")
-        
-        if complete_mesh_path:
-            try:
-                complete_mesh = build_complete_pothole_mesh(
-                    points, plane_model,
-                    engine="auto", z_exaggeration=z_exaggeration
-                )
-                final_complete_path = _get_output_path(complete_mesh_path, cluster_id, default_ext=".ply")
-                save_mesh(complete_mesh, final_complete_path)
-                print(f"      Saved complete pothole mesh -> {final_complete_path}")
-            except Exception as e:
-                print(f"      Warning: Failed to build complete mesh: {e}")
-        
-        if points_path:
-            verts = np.asarray(mesh.vertices)
-            pcd_out = o3d.geometry.PointCloud()
-            pcd_out.points = o3d.utility.Vector3dVector(verts)
-            final_points_path = _get_output_path(points_path, cluster_id, default_ext=".pcd")
-            if o3d.io.write_point_cloud(final_points_path, pcd_out, write_ascii=False, compressed=False):
-                print(f"      Saved TIN vertices -> {final_points_path}")
-    except Exception:
-        pass
-
-
-def _save_hull_plot(
-    points: np.ndarray,
-    *,
-    hull_path: Optional[str],
-    cluster_id: Optional[int] = None,
-) -> None:
-    """Save 2D convex hull plot with optional cluster suffix."""
-    if not hull_path or not _validate_points_for_export(points):
-        return
-    
-    try:
-        from .analysis import convex_hull_area
-        hull_area, hull_obj = convex_hull_area(points[:, :2])
-        if hull_obj is not None:
-            final_path = _get_output_path(hull_path, cluster_id, default_ext=".png")
-            title = f"Pothole-{cluster_id} (Area={hull_area:.4f} m²)" if cluster_id is not None else f"Hull (Area={hull_area:.4f} m²)"
-            save_hull_plot(points[:, :2], hull_obj, final_path, title=title)
-            print(f"      Saved 2D hull plot -> {final_path}")
-    except Exception:
-        pass
-
-
-def _save_surface_heatmap(
-    points: np.ndarray,
-    plane_model: np.ndarray,
-    *,
-    heatmap_path: Optional[str],
-    cluster_id: Optional[int] = None,
-) -> None:
-    """Save surface depth heatmap with optional cluster suffix."""
-    if not heatmap_path or not _validate_points_for_export(points):
-        return
-    
-    try:
-        coeffs, _ = fit_quadratic_surface(points)
-        grid = surface_depth_grid(points, plane_model, coeffs)
-        if grid is not None:
-            xx, yy, depths_grid, mask = grid
-            final_path = _get_output_path(heatmap_path, cluster_id, default_ext=".png")
-            save_depth_heatmap(xx, yy, depths_grid, mask, final_path)
-            print(f"      Saved surface depth heatmap -> {final_path}")
-    except Exception:
-        pass
-
-
-def _save_plane_mesh(
-    pcd: o3d.geometry.PointCloud,
-    plane_model: np.ndarray,
-    extent_points: np.ndarray,
-    *,
-    plane_path: Optional[str],
-    margin: float = 0.1,
-) -> None:
-    """Save standalone plane mesh sized to extent points."""
-    if not plane_path or not _validate_points_for_export(extent_points):
-        return
-    
-    try:
-        plane = plane_mesh_covering_cloud(pcd, plane_model, extent_pts=extent_points, margin=margin)
-        if plane is not None:
-            o3d.io.write_triangle_mesh(plane_path, plane, write_ascii=False)
-            print(f"      Saved plane mesh -> {plane_path}")
-    except Exception:
-        pass
+ 
 
 
 def run_geometry_pipeline(
     pcd_path: str,
     eps: float = 0.1,
     summary_only: bool = False,
-    save_hull_2d: bool = False,
-    hull_plot_path: Optional[str] = None,
     aggregate_all: bool = False,
-    visualize_3d: bool = False,
-    save_surface_heatmap: bool = False,
-    surface_heatmap_path: Optional[str] = None,
-    save_delaunay_contrib_2d_path: Optional[str] = None,
-    save_delaunay_contrib_3d_multi_path: Optional[str] = None,
-    save_tin_mesh_path: Optional[str] = None,
-    save_complete_pothole_mesh_path: Optional[str] = None,
-    tin_z_exaggeration: float = 1.0,
-    save_tin_points_path: Optional[str] = None,
-    save_plane_mesh_path: Optional[str] = None,
     plane_extent_margin: float = 0.1,
-    save_pothole_points_with_fitted_plane: bool = False,
+    plane_with_hole_grid_res: int = 64,
+    visualization: Optional[VisualizationConfig] = None,
+    output_paths: Optional[OutputPathsConfig] = None,
+    triangle_pruning: Optional[TrianglePruningStrategy] = None,
 ) -> None:
     """End-to-end pothole geometry pipeline.
 
     Steps:
-      1) Read the point cloud and separate pothole vs road points (color-based).
-      2) Fit the road plane with RANSAC and compute signed distances.
-      3) Keep pothole points (below plane), convert depths to positive.
-      4) Optionally cluster pothole points; compute per-cluster summaries.
-      5) Optionally visualize hulls/3D scene and save surface depth heatmaps.
+      1) Read the PCD and split road vs pothole points by color.
+      2) Fit the road plane (RANSAC)
+      3) Compute signed depths to the plane.
+      4) Keep pothole points (below plane) and convert depths to positive.
+      5) Optionally cluster pothole points (DBSCAN); compute per‑cluster summaries
+         including convex‑hull area/volume and Delaunay (TIN) volume.
+      6) Build a pruned Delaunay triangulation (flatness + alpha filters) over
+         pothole XY and use it for volume integration and contribution visuals.
+      7) Optionally save artifacts: 2D/3‑view 3D Delaunay contribution images,
+         TIN mesh/vertices, complete pothole mesh, plane‑with‑hole mesh,
+         combined mesh, overlay (combined + input PCD spheres), and a standalone
+         plane mesh sized to the pothole extent.
+      8) Optionally save a 2D hull plot and a quadratic‑surface depth heatmap;
+         optionally open interactive 3D views.
+      9) Print per‑cluster and overall statistics; optionally aggregate metrics
+         across clusters.
+
+    Args:
+      pcd_path: Absolute path to an input `.pcd` containing road + pothole points.
+        Pothole points should be red‑tinted so they can be separated by color.
+      eps: DBSCAN epsilon (meters) for clustering pothole points.
+      summary_only: If True, compute a single summary without clustering.
+      aggregate_all: If True, print aggregated metrics across clusters.
+      plane_extent_margin: Extra margin (meters) around pothole extent when
+        sizing the standalone plane mesh.
+      plane_with_hole_grid_res: Grid resolution for building the plane‑with‑hole
+        mesh.
+      visualization: VisualizationConfig with all visualization toggles and
+        mesh‑visual related parameters.
+      output_paths: OutputPathsConfig with all optional output destinations.
+
+    Returns:
+      None. Prints summaries to stdout and writes artifacts only when output paths
+      are provided. Per‑cluster exports automatically get `_cluster_{id}` suffixes.
+
+    Raises:
+      None directly. I/O and mesh‑building errors are caught and logged; missing
+      or empty inputs result in early returns with console messages.
     """
+    # Normalize inputs into config objects
+    viz_cfg = visualization or VisualizationConfig()
+    out_cfg = output_paths or OutputPathsConfig()
+
+    # Load and validate data
     pcd = read_point_cloud(pcd_path)
     pothole_points, road_points = classify_points_by_color(pcd)
 
@@ -254,173 +314,68 @@ def run_geometry_pipeline(
         print("No pothole points found")
         return
 
+    # Fit plane and filter pothole points
     plane_model, inlier_mask = segment_plane_road(pcd)
     signed_depths = compute_depths_from_plane(pothole_points, plane_model)
-    filtered_points, depths = filter_pothole_depths(pothole_points, signed_depths)
+    filtered_points, depths = filter_pothole_depths(
+        pothole_points, signed_depths)
+
     if len(filtered_points) == 0:
         print("No pothole points below the road plane")
         return
 
-    if summary_only and not aggregate_all:
-        # Single-pothole style summary
-        summary = per_pothole_summary(filtered_points, depths, plane_model, compute_surface=True)
-        print("\n  Pothole-A:")
-        print(f"    Points: {summary['points']}")
-        print("    Basic depth analysis:")
-        print(f"      Max depth: {summary['max_depth']:.4f} m")
-        print(f"      Mean depth: {summary['mean_depth']:.4f} m")
-        print(f"      Median depth: {summary['median_depth']:.4f} m")
-        print("    Convex hull approximation:")
-        print(f"      Area: {summary['hull_area']:.4f} m²")
-        print(f"      Volume: {summary['simple_volume']:.6f} m³")
+    # Cluster pothole points
+    if summary_only:
+        labels = np.zeros(len(filtered_points), dtype=int)
+        n_clusters = 1
+    else:
+        labels, n_clusters = dbscan_labels(filtered_points, eps=eps)
+        if n_clusters == 0:
+            labels, n_clusters = dbscan_labels(filtered_points, eps=EPS_MAX)
 
-        if save_hull_2d:
-            _save_hull_plot(filtered_points, hull_path=hull_plot_path or "hull_2d.png")
-        # Optional surface heatmap for single cluster
-        if save_surface_heatmap and 'delaunay_volume' in summary:
-            _save_surface_heatmap(filtered_points, plane_model, heatmap_path=surface_heatmap_path or "surface_depth_heatmap.png")
-        # Optional Delaunay/TIN contribution visualization (overall)
-        _save_delaunay_contrib_images(
-            filtered_points, plane_model,
-            save_2d_path=save_delaunay_contrib_2d_path,
-            save_3d_path=save_delaunay_contrib_3d_multi_path
-        )
-        # Optional TIN mesh/points export (overall)
-        _save_tin_mesh_and_points(
-            filtered_points, plane_model,
-            mesh_path=save_tin_mesh_path,
-            points_path=save_tin_points_path,
-            complete_mesh_path=save_complete_pothole_mesh_path,
-            z_exaggeration=tin_z_exaggeration
-        )
-        # Optional standalone plane mesh export (overall)
-        _save_plane_mesh(
-            pcd, plane_model, filtered_points,
-            plane_path=save_plane_mesh_path,
-            margin=plane_extent_margin
-        )
-        if visualize_3d:
-            try:
-                pcd = read_point_cloud(pcd_path)
-                visualize_plane_and_potholes(pcd, plane_model, filtered_points, None, None)
-            except Exception:
-                pass
-        return
-
-    labels, n_clusters = dbscan_labels(filtered_points, eps=eps)
-
-    # If no clusters found, use max eps
-    if n_clusters == 0:
-        labels, n_clusters = dbscan_labels(filtered_points, eps=EPS_MAX)
-
-    print("\nPothole Analysis Results")
-    print(f"Plane model (a,b,c,d): {plane_model}")
-    print(f"Road inliers: {inlier_mask.sum()} / {len(pcd.points)}")
-    print(f"Pothole points: {len(pothole_points)}")
-    print(f"Points below plane (actual potholes): {len(filtered_points)}")
-    print(f"Number of potholes detected: {n_clusters}")
+    # Print header with counts
+    print_pipeline_header(plane_model, inlier_mask, pothole_points,
+                          filtered_points, n_clusters, len(pcd.points))
 
     summaries: Dict[int, Dict] = {}
     for cluster_id in range(n_clusters):
         cluster_mask = labels == cluster_id
         pts = filtered_points[cluster_mask]
-    
+
         dps = depths[cluster_mask]
-        summary = per_pothole_summary(pts, dps, plane_model, compute_surface=True)
+        summary = per_pothole_summary(
+            pts, dps, plane_model, compute_surface=True)
         summaries[cluster_id] = summary
 
-        print(f"\n  Pothole-{chr(65+cluster_id) if cluster_id < 26 else cluster_id+1}:")
-        print(f"    Points: {summary['points']}")
-        print("    Basic depth analysis:")
-        print(f"      Max depth: {summary['max_depth']:.4f} m")
-        print(f"      Mean depth: {summary['mean_depth']:.4f} m")
-        print(f"      Median depth: {summary['median_depth']:.4f} m")
-        print("    Convex hull approximation:")
-        print(f"      Area: {summary['hull_area']:.4f} m²")
-        print(f"      Volume: {summary['simple_volume']:.6f} m³")
-        if 'delaunay_volume' in summary:
-            print("    Delaunay-based volume:")
-            print(f"      Delaunay volume: {summary['delaunay_volume']:.6f} m³")
-            vr = summary.get('volume_ratio_delaunay_over_convex', None)
-            if vr is not None:
-                print(f"      Volume ratio (surface/convex): {vr:.2f}")
+        print_cluster_summary(summary, cluster_id)
 
-        if save_hull_2d:
-            _save_hull_plot(pts, hull_path=hull_plot_path, cluster_id=cluster_id)
-        if save_surface_heatmap and 'delaunay_volume' in summary:
-            _save_surface_heatmap(pts, plane_model, heatmap_path=surface_heatmap_path, cluster_id=cluster_id)
-        # Optional Delaunay/TIN contribution visualization per cluster
-        if save_delaunay_contrib_2d_path:
-            _save_delaunay_contrib_images(
-                pts, plane_model,
-                save_2d_path=save_delaunay_contrib_2d_path,
-                save_3d_path=None,
-                cluster_id=cluster_id
-            )
-        # Optional TIN mesh/points export per cluster
-        _save_tin_mesh_and_points(
-            pts, plane_model,
-            mesh_path=save_tin_mesh_path,
-            points_path=save_tin_points_path,
-            complete_mesh_path=save_complete_pothole_mesh_path,
-            z_exaggeration=tin_z_exaggeration,
-            cluster_id=cluster_id
+        export_artifacts_for_cluster(
+            pts,
+            plane_model,
+            cluster_id=cluster_id,
+            has_surface=('delaunay_volume' in summary),
+            viz_cfg=viz_cfg,
+            out_cfg=out_cfg,
+            pcd=pcd,
+            plane_extent_margin=plane_extent_margin,
+            plane_with_hole_grid_res=plane_with_hole_grid_res,
+            pcd_path=pcd_path,
+            triangle_pruning=triangle_pruning,
         )
-        if save_pothole_points_with_fitted_plane:
-            # Size the plane quad to this cluster's pothole points, with a small margin (meters)
-            plane = plane_mesh_covering_cloud(pcd, plane_model, extent_pts=pts, margin=1)
-            if plane is not None:
-                plane_vertices = np.asarray(plane.vertices)
-                plane_triangles = np.asarray(plane.triangles)
-                combined_vertices = np.vstack([plane_vertices, pts]) if pts.size > 0 else plane_vertices
 
-                combined_mesh = o3d.geometry.TriangleMesh()
-                combined_mesh.vertices = o3d.utility.Vector3dVector(combined_vertices)
-                combined_mesh.triangles = o3d.utility.Vector3iVector(plane_triangles)
-
-                # Build a per-vertex color array:
-                # - The first 4 vertices belong to the plane quad → color them blue-ish
-                # - Remaining vertices are pothole points → color them red
-                colors = np.zeros((combined_vertices.shape[0], 3), dtype=float)
-                colors[:4] = np.array([0.2, 0.6, 1.0])
-                if combined_vertices.shape[0] > 4:
-                    colors[4:] = np.array([1.0, 0.0, 0.0])
-                # Attach colors to the mesh so viewers can distinguish plane vs points
-                combined_mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
-                # Compute normals for proper shading of the plane triangles
-                combined_mesh.compute_vertex_normals()
-
-                pothole_dir = os.path.dirname(pcd_path)
-                out_path = os.path.join(pothole_dir, "pothole_points_with_fitted_plane.ply")
-
-                o3d.io.write_triangle_mesh(
-                    out_path,
-                    combined_mesh,
-                    write_ascii=False,
-                )
-        
     # Overall stats
-    print(f"\nOverall statistics (all potholes):")
-    print(f"  Max depth: {depths.max():.4f} m")
-    print(f"  Mean depth: {depths.mean():.4f} m")
-    print(f"  Median depth: {np.median(depths):.4f} m")
+    print_overall_stats(depths)
 
     if aggregate_all and n_clusters > 0:
-        total_area = sum(s.get("hull_area", 0.0) for s in summaries.values())
-        total_volume = sum(s.get("simple_volume", 0.0) for s in summaries.values())
-        avg_of_means = np.mean([s.get("mean_depth", 0.0) for s in summaries.values()])
-        print(f"\nAggregated across clusters:")
-        print(f"  Sum of areas (convex hull): {total_area:.6f} m²")
-        print(f"  Sum of volumes (convex hull approx.): {total_volume:.6f} m³")
-        print(f"  Average of mean depths: {avg_of_means:.6f} m")
+        print_aggregated_stats(summaries)
 
-    if visualize_3d:
+    if viz_cfg.visualize_3d:
         try:
             pcd = read_point_cloud(pcd_path)
-            visualize_plane_and_potholes(pcd, plane_model, filtered_points, labels, n_clusters)
+            visualize_plane_and_potholes(
+                pcd, plane_model, filtered_points, labels, n_clusters)
         except Exception:
             pass
-
 
 
 def analyze_pothole_geometry(
@@ -461,33 +416,29 @@ def analyze_pothole_geometry(
     result["plane_model"] = [float(x) for x in plane_model]
 
     signed_depths = compute_depths_from_plane(pothole_points, plane_model)
-    filtered_points, depths = filter_pothole_depths(pothole_points, signed_depths)
+    filtered_points, depths = filter_pothole_depths(
+        pothole_points, signed_depths)
+
     if len(filtered_points) == 0:
         result["status"] = "no_points_below_plane"
         return result
 
-    # Single-pothole style summary
-    if summary_only and not aggregate_all:
-        summary = per_pothole_summary(filtered_points, depths, plane_model, compute_surface=True)
-        result["n_clusters"] = 1
-        result["clusters"] = [summary]
-        result["overall"] = {
-            "max_depth": float(depths.max()),
-            "mean_depth": float(depths.mean()),
-            "median_depth": float(np.median(depths)),
-        }
-        return result
-
-    labels, n_clusters = dbscan_labels(filtered_points, eps=eps)
-    if n_clusters == 0:
-        labels, n_clusters = dbscan_labels(filtered_points, eps=EPS_MAX)
+    # Cluster pothole points
+    if summary_only:
+        labels = np.zeros(len(filtered_points), dtype=int)
+        n_clusters = 1
+    else:
+        labels, n_clusters = dbscan_labels(filtered_points, eps=eps)
+        if n_clusters == 0:
+            labels, n_clusters = dbscan_labels(filtered_points, eps=EPS_MAX)
 
     summaries: Dict[int, Dict] = {}
     for cluster_id in range(n_clusters):
         cluster_mask = labels == cluster_id
         pts = filtered_points[cluster_mask]
         dps = depths[cluster_mask]
-        summary = per_pothole_summary(pts, dps, plane_model, compute_surface=True)
+        summary = per_pothole_summary(
+            pts, dps, plane_model, compute_surface=True)
         summaries[cluster_id] = summary
 
     result["n_clusters"] = int(n_clusters)
@@ -500,8 +451,10 @@ def analyze_pothole_geometry(
 
     if aggregate_all and n_clusters > 0:
         total_area = sum(s.get("hull_area", 0.0) for s in summaries.values())
-        total_volume = sum(s.get("simple_volume", 0.0) for s in summaries.values())
-        avg_of_means = float(np.mean([s.get("mean_depth", 0.0) for s in summaries.values()]))
+        total_volume = sum(s.get("simple_volume", 0.0)
+                           for s in summaries.values())
+        avg_of_means = float(
+            np.mean([s.get("mean_depth", 0.0) for s in summaries.values()]))
         result["aggregate"] = {
             "sum_area_hull": float(total_area),
             "sum_volume_hull": float(total_volume),
@@ -509,4 +462,3 @@ def analyze_pothole_geometry(
         }
 
     return result
-
