@@ -10,17 +10,20 @@ Relevant config parameters:
 
 Source roads root structure:
 
+```
 source_roads_root/
 ├── segment_1/
 │   ├── Images/
 │   ├── PCDs/
 ├── segment_2/
 ├── ...
+```
 
 Images and PCDs directories must contain images and point clouds respectively. Images and point clouds must be named using the corresponding timestamp (e.g., 1756369693.599339008.jpg and 1756369693.599339008.pcd). 
 
 Expected output:
 
+```
 source_roads_root/
 ├── segment_1/
 │   ├── Images/
@@ -32,6 +35,7 @@ source_roads_root/
 │   ├── ...
 ├── segment_2/
 ├── ...
+```
 
 Validation scripts will check for the following issues:
 - Duplicate images or PCDs
@@ -57,6 +61,7 @@ Relevant config parameters:
 
 Source roads root structure:
 
+```
 source_roads_root/
 ├── segment_1/
 │   ├── Images/
@@ -69,9 +74,11 @@ source_roads_root/
 │   ├── <imu_filename>.txt
 ├── segment_2/
 ├── ...
+```
 
 Expected output:
 
+```
 source_roads_root/
 ├── segment_1/
 │   ├── Images/
@@ -88,6 +95,7 @@ source_roads_root/
 │   ├──  output_video.mp4
 ├── segment_2/
 ├── ...
+```
 
 Validation scripts will check for the following issues:
 - Missing segment depth timestamps data
