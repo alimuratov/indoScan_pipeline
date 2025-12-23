@@ -34,11 +34,19 @@ class PotholeSnapshotRepository:
     def get(self, id: int) -> PotholeSnapshot:
         return self._storage[id]
 
+    def validate_and_prepare_destination_directory(self) -> None:
+        if not self.destination_directory_path.is_dir():
+            # create the directory
+            self.destination_directory_path.mkdir(parents=True, exist_ok=True)
+        else:
+            # delete its contents
+            for folder in self.destination_directory_path.iterdir():
+                if folder.is_dir() and folder.name.startswith("pothole_"):
+                    shutil.rmtree(folder)
+
     def save_all(self) -> None:
         # if the pothole folder already exists, delete it and its contents and create a new one
-        for folder in self.destination_directory_path.iterdir():
-            if folder.is_dir() and folder.name.startswith("pothole_"):
-                shutil.rmtree(folder)
+        self.validate_and_prepare_destination_directory()
 
         for pothole_snapshot in self._storage:
             pothole_folder = self.destination_directory_path / \
@@ -120,50 +128,42 @@ class PcdRepository:
 
 
 class PairingService:
-    def __init__(self, image_repository: KeyedRepository[Image], pcd_repository: KeyedRepository[Pcd], pothole_snapshot_repository: SnapshotSink[PotholeSnapshot], start_id: int):
-        self._image_repository = image_repository
-        self._pcd_repository = pcd_repository
-        self._pothole_snapshot_repository = pothole_snapshot_repository
-        self._start_id = start_id
+    def __init__(self, image_stems: Set[str], pcd_stems: Set[str]):
+        self._image_stems = image_stems
+        self._pcd_stems = pcd_stems
 
-    def pair(self, id: int, image: Image, pcd: Pcd) -> PotholeSnapshot:
-        return PotholeSnapshot(id=id, image=image, pcd=pcd)
-
-    def pair_all(self) -> Tuple[List[str], List[str]]:
-        missing_image, missing_pcd = self.detect_missing_assets()
-
-        matched = \
-            self._image_repository.keys() & self._pcd_repository.keys()
-
-        matched = sorted(matched)
-        id = self._start_id
-        for matched_key in matched:
-            image = self._image_repository.get(matched_key)
-            pcd = self._pcd_repository.get(matched_key)
-
-            pothole_snapshot = self.pair(id, image, pcd)
-            self._pothole_snapshot_repository.add(pothole_snapshot)
-
-            id += 1
-
-        return missing_image, missing_pcd
+    def match(self) -> List[str]:
+        matched = self._image_stems & self._pcd_stems
+        return sorted(matched)
 
     def detect_missing_assets(self) -> Tuple[List[str], List[str]]:
-        missing_pcd = self._image_repository.keys() - self._pcd_repository.keys()
-        missing_image = self._pcd_repository.keys() - self._image_repository.keys()
+        missing_pcd = self._image_stems - self._pcd_stems
+        missing_image = self._pcd_stems - self._image_stems
         return sorted(missing_image), sorted(missing_pcd)
 
 
 class ApplicationService:
 
-    def run(self, image_dir: Path, pcd_dir: Path, output_dir: Path,
-            start_id: int, zero_pad: int, move: bool, log_level: str) -> None:
-        logging.basicConfig(
-            level=getattr(logging, str(log_level).upper(), logging.INFO),
-            format="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
-        )
+    def print_missing_assets(self, missing_images: List[str], missing_pcds: List[str]) -> None:
+        for missing_image in missing_images:
+            logging.error("Missing image: %s",
+                          missing_image)
+        for missing_pcd in missing_pcds:
+            logging.error("Missing pcd: %s",
+                          missing_pcd)
 
-        # IO Layer
+    def construct_pothole_snapshots(self, image_repository: ImageRepository, pcd_repository: PcdRepository, pothole_snapshot_repository: PotholeSnapshotRepository, matched_keys: List[str], start_id: int) -> None:
+        id = start_id
+        for matched_key in matched_keys:
+            image = image_repository.get(matched_key)
+            pcd = pcd_repository.get(matched_key)
+            pothole_snapshot = PotholeSnapshot(id=id, image=image, pcd=pcd)
+            pothole_snapshot_repository.add(pothole_snapshot)
+            id += 1
+
+        return
+
+    def build_repositories(self, image_dir: Path, pcd_dir: Path) -> Tuple[ImageRepository, PcdRepository]:
         image_repository = ImageRepository()
         pcd_repository = PcdRepository()
 
@@ -177,20 +177,31 @@ class ApplicationService:
                 pcd = Pcd(path=pcd_path)
                 pcd_repository.add(pcd)
 
+        return image_repository, pcd_repository
+
+    def run(self, image_dir: Path, pcd_dir: Path, output_dir: Path,
+            start_id: int, zero_pad: int, move: bool, log_level: str) -> None:
+        logging.basicConfig(
+            level=getattr(logging, str(log_level).upper(), logging.INFO),
+            format="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
+        )
+
+        # IO Layer
+        image_repository, pcd_repository = self.build_repositories(
+            image_dir, pcd_dir)
+
         pothole_snapshot_repository = PotholeSnapshotRepository(
             output_dir, zero_pad, move)
 
         # Logic Layer
-        pairing_service = PairingService(
-            image_repository, pcd_repository, pothole_snapshot_repository, start_id)
-        missing_image, missing_pcd = pairing_service.pair_all()
+        image_stems, pcd_stems = image_repository.keys(), pcd_repository.keys()
+        pairing_service = PairingService(image_stems, pcd_stems)
+        matched = pairing_service.match()
+        missing_image, missing_pcd = pairing_service.detect_missing_assets()
+        self.print_missing_assets(missing_image, missing_pcd)
 
-        for missing_image in missing_image:
-            logging.error("Missing image: %s",
-                          missing_image)
-        for missing_pcd in missing_pcd:
-            logging.error("Missing pcd: %s",
-                          missing_pcd)
+        self.construct_pothole_snapshots(
+            image_repository, pcd_repository, pothole_snapshot_repository, matched, start_id)
 
         # IO Layer
         pothole_snapshot_repository.save_all()

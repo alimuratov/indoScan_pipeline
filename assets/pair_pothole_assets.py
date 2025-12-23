@@ -38,81 +38,13 @@ import logging
 import shutil
 from pathlib import Path
 from typing import Dict, List, Set
+# import DDD_pair_pothole application service
+from assets.DDD_pair_pothole import ApplicationService
 
 IMAGE_EXTS: Set[str] = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 
-def index_by_stem(directory: Path, exts: Set[str]) -> Dict[str, Path]:
-    mapping: Dict[str, Path] = {}
-    if not directory.is_dir():
-        return mapping
-    for entry in directory.iterdir():
-        if entry.is_file():
-            ext = entry.suffix.lower()
-            if exts and ext not in exts:
-                continue
-            mapping[entry.stem] = entry
-    return mapping
-
-
-def ensure_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-
-
 def pair_pothole_assets(pcd_dir: Path, img_dir: Path, dest_dir: Path, start_id: int, zero_pad: int, move: bool, log_level: str) -> None:
-    logging.basicConfig(
-        level=getattr(logging, str(log_level).upper(), logging.INFO),
-        format="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
-    )
-
-    ensure_dir(dest_dir)
-
-    # check if dest_dir contains pothole_<id> folders and delete them
-    for folder in dest_dir.iterdir():
-        if folder.is_dir() and folder.name.startswith("pothole_"):
-            shutil.rmtree(folder)
-
-    pcd_map = index_by_stem(pcd_dir, exts={".pcd"})
-    img_map = index_by_stem(img_dir, exts=IMAGE_EXTS)
-
-    pcd_names = set(pcd_map.keys())
-    img_names = set(img_map.keys())
-    # Sorting makes processing deterministic (i.e., the pairing order is consistent)
-    matched = sorted(pcd_names & img_names)
-
-    missing_img = sorted(pcd_names - img_names)
-    missing_pcd = sorted(img_names - pcd_names)
-
-    if missing_img:
-        logging.error("Missing image for %d .pcd file(s): e.g. %s",
-                      len(missing_img), ", ".join(missing_img[:5]))
-    if missing_pcd:
-        logging.error("Missing .pcd for %d image file(s): e.g. %s",
-                      len(missing_pcd), ", ".join(missing_pcd[:5]))
-
-    count = 0
-    current_id = start_id
-
-    for name in matched:
-        pcd_path = pcd_map[name]
-        img_path = img_map[name]
-
-        folder = dest_dir / f"pothole_{current_id:0{zero_pad}d}"
-        ensure_dir(folder)
-
-        dest_pcd = folder / pcd_path.name
-        dest_img = folder / img_path.name
-
-        if move:
-            shutil.move(str(pcd_path), dest_pcd)
-            shutil.move(str(img_path), dest_img)
-        else:
-            shutil.copy2(str(pcd_path), dest_pcd)
-            shutil.copy2(str(img_path), dest_img)
-
-        logging.debug("%s → %s | %s → %s", pcd_path.name,
-                      dest_pcd, img_path.name, dest_img)
-        count += 1
-        current_id += 1
-
-    logging.debug("Paired %d pothole folder(s) under: %s", count, dest_dir)
+    application_service = ApplicationService()
+    application_service.run(img_dir, pcd_dir, dest_dir,
+                            start_id, zero_pad, move, log_level)
