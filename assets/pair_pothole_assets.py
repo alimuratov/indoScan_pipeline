@@ -41,6 +41,7 @@ from typing import Dict, List, Set
 
 IMAGE_EXTS: Set[str] = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
+
 def index_by_stem(directory: Path, exts: Set[str]) -> Dict[str, Path]:
     mapping: Dict[str, Path] = {}
     if not directory.is_dir():
@@ -53,8 +54,10 @@ def index_by_stem(directory: Path, exts: Set[str]) -> Dict[str, Path]:
             mapping[entry.stem] = entry
     return mapping
 
+
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
 
 def pair_pothole_assets(pcd_dir: Path, img_dir: Path, dest_dir: Path, start_id: int, zero_pad: int, move: bool, log_level: str) -> None:
     logging.basicConfig(
@@ -81,9 +84,11 @@ def pair_pothole_assets(pcd_dir: Path, img_dir: Path, dest_dir: Path, start_id: 
     missing_pcd = sorted(img_names - pcd_names)
 
     if missing_img:
-        logging.error("Missing image for %d .pcd file(s): e.g. %s", len(missing_img), ", ".join(missing_img[:5]))
+        logging.error("Missing image for %d .pcd file(s): e.g. %s",
+                      len(missing_img), ", ".join(missing_img[:5]))
     if missing_pcd:
-        logging.error("Missing .pcd for %d image file(s): e.g. %s", len(missing_pcd), ", ".join(missing_pcd[:5]))
+        logging.error("Missing .pcd for %d image file(s): e.g. %s",
+                      len(missing_pcd), ", ".join(missing_pcd[:5]))
 
     count = 0
     current_id = start_id
@@ -105,7 +110,8 @@ def pair_pothole_assets(pcd_dir: Path, img_dir: Path, dest_dir: Path, start_id: 
             shutil.copy2(str(pcd_path), dest_pcd)
             shutil.copy2(str(img_path), dest_img)
 
-        logging.debug("%s → %s | %s → %s", pcd_path.name, dest_pcd, img_path.name, dest_img)
+        logging.debug("%s → %s | %s → %s", pcd_path.name,
+                      dest_pcd, img_path.name, dest_img)
         count += 1
         current_id += 1
 
