@@ -127,19 +127,23 @@ class PcdRepository:
         return set(self._storage.keys())
 
 
+@dataclass(frozen=True)
+class PairingResult:
+    matched_keys: List[str]
+    missing_images: List[str]
+    missing_pcds: List[str]
+
+
 class PairingService:
-    def __init__(self, image_stems: Set[str], pcd_stems: Set[str]):
-        self._image_stems = image_stems
-        self._pcd_stems = pcd_stems
-
-    def match(self) -> List[str]:
-        matched = self._image_stems & self._pcd_stems
-        return sorted(matched)
-
-    def detect_missing_assets(self) -> Tuple[List[str], List[str]]:
-        missing_pcd = self._image_stems - self._pcd_stems
-        missing_image = self._pcd_stems - self._image_stems
-        return sorted(missing_image), sorted(missing_pcd)
+    def pair_assets(self, image_stems: Set[str], pcd_stems: Set[str]) -> PairingResult:
+        matched = sorted(image_stems & pcd_stems)
+        missing_images = sorted(pcd_stems - image_stems)
+        missing_pcds = sorted(image_stems - pcd_stems)
+        return PairingResult(
+            matched_keys=matched,
+            missing_images=missing_images,
+            missing_pcds=missing_pcds
+        )
 
 
 class ApplicationService:
@@ -186,7 +190,7 @@ class ApplicationService:
             format="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
         )
 
-        # IO Layer
+        # IO Layer: Initialize Repositories
         image_repository, pcd_repository = self.build_repositories(
             image_dir, pcd_dir)
 
@@ -195,13 +199,14 @@ class ApplicationService:
 
         # Logic Layer
         image_stems, pcd_stems = image_repository.keys(), pcd_repository.keys()
-        pairing_service = PairingService(image_stems, pcd_stems)
-        matched = pairing_service.match()
-        missing_image, missing_pcd = pairing_service.detect_missing_assets()
-        self.print_missing_assets(missing_image, missing_pcd)
+
+        pairing_result = PairingService().pair_assets(image_stems, pcd_stems)
+
+        self.print_missing_assets(
+            pairing_result.missing_images, pairing_result.missing_pcds)
 
         self.construct_pothole_snapshots(
-            image_repository, pcd_repository, pothole_snapshot_repository, matched, start_id)
+            image_repository, pcd_repository, pothole_snapshot_repository, pairing_result.matched_keys, start_id)
 
         # IO Layer
         pothole_snapshot_repository.save_all()
